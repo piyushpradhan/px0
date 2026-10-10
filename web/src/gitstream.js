@@ -1,20 +1,34 @@
 import { S, apiPost, doc_ } from './state.js';
-import { updateSidebarToggleState, patchTreeGitStatus, treeEl, setSidebarMode } from './tree.js';
+import { updateSidebarToggleState, patchTreeGitStatus, treeEl, setSidebarMode, hasGitView } from './tree.js';
 import { drawTabs, loadGutter, closeTab, reloadOpenTabs } from './tabs.js';
 import { syncDiffView } from './diff.js';
 import { render } from './renderer.js';
 import { updateStatus, updateMetricsDisplay } from './status.js';
 import { updateGitPanel } from './gitpanel.js';
+import { refreshUnpushed } from './unpushed.js';
+import { updateScopeCounts } from './prscope.js';
 
 let eventSource = null;
 let reconnectTimer = null;
 let lastSig = '';
 let refreshing = null;
 let lastRefreshAt = 0;
+let lastTrafficAt = Date.now();
 
-// Focus, visibilitychange and the SSE reconnect snapshot all fire together when
-// the user comes back to the tab; one refresh covers them.
-const REFRESH_COOLDOWN_MS = 1500;
+function markTraffic() {
+  lastTrafficAt = Date.now();
+}
+
+function reconnect() {
+  disconnect();
+  connect();
+}
+
+async function handleWake() {
+  lastSig = ''; // Clear signature to ensure git-status, badges and unpushed state apply freshly
+  reconnect();
+  await triggerRefresh();
+}
 
 export function initGitStream() {
   connect();
@@ -22,10 +36,13 @@ export function initGitStream() {
   // Instant refresh when user focuses the browser window
   window.addEventListener('focus', () => {
     if (document.visibilityState === 'visible') {
-      if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-        connect();
+      const now = Date.now();
+      // If the connection is closed, or if no SSE traffic has arrived for >5s, reconnect
+      if (!eventSource || eventSource.readyState !== EventSource.OPEN || (now - lastTrafficAt > 5000)) {
+        handleWake();
+      } else {
+        triggerRefresh();
       }
-      triggerRefresh();
     }
   });
 
@@ -34,20 +51,40 @@ export function initGitStream() {
     if (document.visibilityState === 'hidden') {
       disconnect();
     } else {
-      connect();
-      triggerRefresh();
+      handleWake();
     }
   });
+
+  // Sleep/wake detection & connection watchdog:
+  // When laptop lid closes, timers suspend. When reopened, the timer delta jumps significantly.
+  let lastTick = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const gap = now - lastTick;
+    lastTick = now;
+
+    // 1. Laptop lid closed/reopened or OS sleep: delta > 3000ms (expected ~1000ms)
+    if (gap > 3000) {
+      handleWake();
+      return;
+    }
+
+    // 2. Stream watchdog: if tab is visible and no SSE events arrived for >12s, reconnect
+    if (document.visibilityState === 'visible' && (now - lastTrafficAt > 12000)) {
+      handleWake();
+    }
+  }, 1000);
 }
 
 export function triggerRefresh() {
-  if (!S.meta?.git) return Promise.resolve();
   if (refreshing) return refreshing;
-  if (Date.now() - lastRefreshAt < REFRESH_COOLDOWN_MS) return Promise.resolve();
   refreshing = (async () => {
     try {
-      const data = await apiPost('/api/git/refresh');
-      await handleGitStatus(data);
+      if (S.meta?.git) {
+        const data = await apiPost('/api/git/refresh');
+        await handleGitStatus(data);
+      }
+      await reloadOpenTabs({ onlyIfChanged: true });
     } catch (e) {
       // Quiet fail on network hiccups
     } finally {
@@ -68,8 +105,14 @@ function connect() {
   try {
     const streamUrl = new URL('api/stream', document.baseURI || location.href).href;
     eventSource = new EventSource(streamUrl);
+    markTraffic();
+
+    eventSource.onopen = () => {
+      markTraffic();
+    };
 
     eventSource.addEventListener('git-status', async e => {
+      markTraffic();
       try {
         const data = JSON.parse(e.data);
         await handleGitStatus(data);
@@ -79,6 +122,7 @@ function connect() {
     });
 
     eventSource.addEventListener('metrics', e => {
+      markTraffic();
       try {
         const data = JSON.parse(e.data);
         updateMetricsDisplay(data);
@@ -87,10 +131,14 @@ function connect() {
       }
     });
 
+    eventSource.addEventListener('ping', () => {
+      markTraffic();
+    });
+
     eventSource.onerror = () => {
       disconnect();
       if (document.visibilityState === 'visible') {
-        reconnectTimer = setTimeout(connect, 3000);
+        reconnectTimer = setTimeout(connect, 1500);
       }
     };
   } catch (err) {
@@ -118,10 +166,7 @@ async function handleGitStatus(data) {
   // but they only repaint if something actually differs.
   const sig = JSON.stringify(data);
   if (sig === lastSig) {
-    const statuses = data.statuses || {};
-    if (S.tabs.some(t => statuses[t.path] && statuses[t.path] !== 'U')) {
-      await reloadOpenTabs({ onlyIfChanged: true });
-    }
+    await reloadOpenTabs({ onlyIfChanged: true });
     return;
   }
   lastSig = sig;
@@ -129,8 +174,14 @@ async function handleGitStatus(data) {
   if (data.gitChanges !== undefined) S.meta.gitChanges = data.gitChanges;
   if (data.gitFiles !== undefined) S.meta.gitFiles = data.gitFiles;
 
+  // Before the Git-view check below: committing empties the tree but fills the
+  // Unpushed section, and pushing empties that in turn, so whether Git view
+  // still has anything to show depends on a fresh unpushed count.
+  // Cheap: only re-reads git log when the ahead count or head commit moved.
+  await refreshUnpushed(data);
+
   updateSidebarToggleState();
-  if (treeEl?.classList.contains('changed-only') && (!S.meta?.gitChanges || S.meta.gitChanges <= 0)) {
+  if (treeEl?.classList.contains('changed-only') && !hasGitView()) {
     await setSidebarMode('files');
   }
 
@@ -141,14 +192,30 @@ async function handleGitStatus(data) {
   const yourDirtyDirs = data.yourDirtyDirs || {};
 
   // Patch rendered tree items in place without full DOM reload
-  await patchTreeGitStatus(statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs);
-  updateGitPanel(data);
+  try {
+    await patchTreeGitStatus(statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs);
+  } catch (err) {
+    console.error('Failed to patch tree git status', err);
+  }
+  try {
+    updateScopeCounts(statuses, yourStatuses);
+  } catch (err) {
+    console.error('Failed to update scope counts', err);
+  }
+  try {
+    updateGitPanel(data);
+  } catch (err) {
+    console.error('Failed to update git panel', err);
+  }
 
   // Close tabs that were opened in git diff view or currently in diff view if their changes are gone.
   // In PR review mode, tabs should remain open even if clean relative to HEAD.
   if (!S.meta?.pr) {
     for (let i = S.tabs.length - 1; i >= 0; i--) {
       const t = S.tabs[i];
+      // A tab pinned to a commit shows a frozen diff; the working tree going
+      // clean is exactly when you want to still be reading it.
+      if (t.diffRef) continue;
       const code = statuses[t.path];
       const isDiff = !!code && code !== 'U';
       const wasDiff = !!(t.diffMode || t.openedInDiffView);
@@ -160,6 +227,7 @@ async function handleGitStatus(data) {
 
   // Check if any open tabs are affected by modifications
   const anyTabModified = S.tabs.some(t => {
+    if (t.diffRef) return false; // frozen at a commit; the working tree can't move it
     const code = statuses[t.path];
     return code && code !== 'U';
   });
@@ -171,6 +239,7 @@ async function handleGitStatus(data) {
     // Synchronize open tabs' diff badges
     let tabsChanged = false;
     for (const t of S.tabs) {
+      if (t.diffRef) continue;
       const code = statuses[t.path];
       const isDiff = !!code && code !== 'U';
       if (t.diffAvailable !== isDiff) {
@@ -184,7 +253,7 @@ async function handleGitStatus(data) {
 
     // Update active editor gutter and diff view if active document is affected
     const curDoc = doc_();
-    if (curDoc) {
+    if (curDoc && !curDoc.diffRef) {
       const curCode = statuses[curDoc.path];
       const hasDiff = !!curCode && curCode !== 'U';
 

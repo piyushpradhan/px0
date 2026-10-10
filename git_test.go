@@ -27,6 +27,9 @@ func gitInstalled() bool {
 // rename) so every status code is exercised. Returns the served root.
 func gitRepo(tb testing.TB) string {
 	tb.Helper()
+	if testing.Short() {
+		tb.Skip("skipping git integration test in short mode")
+	}
 	root := tb.TempDir()
 	// macOS TempDir lives under /var -> /private/var; git reports the real path.
 	if r, err := filepath.EvalSymlinks(root); err == nil {
@@ -93,7 +96,7 @@ func TestGitStatus(t *testing.T) {
 		t.Errorf("keep.go should have no status, got %q", st["keep.go"])
 	}
 
-	// Overlay onto tree nodes. Deleted/old-rename paths have no node on disk.
+	// Overlay onto tree nodes. Deleted files appear with status "D".
 	ix := NewIndex(root)
 	ix.Build()
 	byName := map[string]Node{}
@@ -110,6 +113,7 @@ func TestGitStatus(t *testing.T) {
 		"add.go":  "A",
 		"untr.go": "U",
 		"ren2.go": "R",
+		"del.go":  "D",
 		"keep.go": "",
 	}
 	for name, code := range nodeWant {
@@ -172,6 +176,9 @@ func TestGitDiff(t *testing.T) {
 }
 
 func TestGitCleanRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in short mode")
+	}
 	if !gitInstalled() {
 		t.Skip("git not installed")
 	}
@@ -246,6 +253,9 @@ func TestGitDisabled(t *testing.T) {
 }
 
 func TestGitGutter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in short mode")
+	}
 	if !gitInstalled() {
 		t.Skip("git not installed")
 	}
@@ -531,6 +541,109 @@ func TestGitWatcherCLICommitDetection(t *testing.T) {
 	}
 }
 
+func TestGitWatcherAfterCommitNewChanges(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := gitRepo(t)
+	ix := NewIndex(root)
+	ix.Build()
+
+	s := NewServer(ix, nil)
+	ts := httptest.NewServer(s.mux)
+	defer ts.Close()
+
+	// 1. Commit everything so working tree is clean
+	cmdAdd := exec.Command("git", "add", "-A")
+	cmdAdd.Dir = root
+	cmdAdd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmdAdd.CombinedOutput(); err != nil {
+		t.Fatalf("git add failed: %v\n%s", err, out)
+	}
+	cmd := exec.Command("git", "commit", "-m", "commit all")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit failed: %v\n%s", err, out)
+	}
+
+	count, _, changed, statuses, _, _, _, _ := ix.UpdateGitStatus()
+	if count != 0 || len(statuses) != 0 {
+		t.Fatalf("expected clean worktree after commit, got count=%d statuses=%v", count, statuses)
+	}
+	_ = changed
+
+	// 2. Add a brand new untracked file and modify an existing file
+	if err := os.WriteFile(filepath.Join(root, "brand_new.txt"), []byte("new file content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "keep.go"), []byte("modified keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. UpdateGitStatus should detect both and inject brand_new.txt into children
+	count2, files2, changed2, statuses2, _, _, _, _ := ix.UpdateGitStatus()
+	if !changed2 {
+		t.Errorf("expected changed=true after modifying worktree")
+	}
+	if count2 != 2 {
+		t.Errorf("expected count=2, got %d (files: %v)", count2, files2)
+	}
+	if statuses2["brand_new.txt"] != "U" {
+		t.Errorf("expected brand_new.txt to have status 'U', got %q", statuses2["brand_new.txt"])
+	}
+	if statuses2["keep.go"] != "M" {
+		t.Errorf("expected keep.go to have status 'M', got %q", statuses2["keep.go"])
+	}
+
+	// Verify ix.Children("") actually contains brand_new.txt
+	kids, ok := ix.Children("")
+	if !ok {
+		t.Fatal("expected Children(\"\") to return true")
+	}
+	foundBrandNew := false
+	for _, k := range kids {
+		if k.Name == "brand_new.txt" && !k.Dir && k.Status == "U" {
+			foundBrandNew = true
+			break
+		}
+	}
+	if !foundBrandNew {
+		t.Errorf("expected Children(\"\") to contain brand_new.txt with status 'U'")
+	}
+
+	// 4. Connect to SSE stream and verify Subscribe sends gitChanges: 2
+	req, err := http.NewRequest("GET", ts.URL+"/api/git/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	var initialData map[string]any
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("failed reading SSE stream: %v", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if err := json.Unmarshal([]byte(data), &initialData); err == nil && initialData["git"] == true {
+				break
+			}
+		}
+	}
+
+	if gChanges, ok := initialData["gitChanges"].(float64); !ok || int(gChanges) != 2 {
+		t.Errorf("expected Subscribe initial data gitChanges=2, got %v", initialData["gitChanges"])
+	}
+}
+
 func TestGitStatusAgainstAndPRDiff(t *testing.T) {
 	if !gitInstalled() {
 		t.Skip("git not installed")
@@ -805,6 +918,9 @@ func TestGitStageUnstageCommit(t *testing.T) {
 // more than one working tree.
 func gitTestRun(tb testing.TB, dir string, args ...string) string {
 	tb.Helper()
+	if testing.Short() {
+		tb.Skip("skipping git integration test in short mode")
+	}
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
@@ -1188,3 +1304,629 @@ func TestGitStagedDiffTruncation(t *testing.T) {
 	}
 }
 
+func TestDeletedFileHandling(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	gitTestRun(t, dir, "init", "-b", "main")
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+		gitTestRun(t, dir, "config", cfg[0], cfg[1])
+	}
+	// Create root file and nested file
+	os.WriteFile(filepath.Join(dir, "root.txt"), []byte("root file content\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "sub", "inner"), 0o755)
+	os.WriteFile(filepath.Join(dir, "sub", "inner", "nested.txt"), []byte("nested file content\n"), 0o644)
+	gitTestRun(t, dir, "add", "-A")
+	gitTestRun(t, dir, "commit", "-m", "initial commit")
+
+	// Delete root.txt and the entire sub directory from working tree
+	if err := os.Remove(filepath.Join(dir, "root.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "sub")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Verify Index.Build includes root.txt and sub/inner/nested.txt as "D"
+	ix := NewIndex(dir)
+	ix.Build()
+
+	rootKids, ok := ix.Children("")
+	if !ok {
+		t.Fatal("ix.Children(\"\") failed")
+	}
+	var rootNode, subDirNode *Node
+	for i := range rootKids {
+		if rootKids[i].Name == "root.txt" {
+			rootNode = &rootKids[i]
+		}
+		if rootKids[i].Name == "sub" {
+			subDirNode = &rootKids[i]
+		}
+	}
+	if rootNode == nil {
+		t.Fatal("expected root.txt to be present in ix.Children(\"\")")
+	}
+	if rootNode.Dir || rootNode.Status != "D" {
+		t.Fatalf("expected root.txt to have Dir=false, Status=\"D\", got %+v", rootNode)
+	}
+	if subDirNode == nil || !subDirNode.Dir || !subDirNode.Dirty {
+		t.Fatalf("expected sub to be Dir=true and Dirty=true, got %+v", subDirNode)
+	}
+
+	subKids, ok := ix.Children("sub")
+	if !ok {
+		t.Fatal("ix.Children(\"sub\") failed")
+	}
+	var innerDirNode *Node
+	for i := range subKids {
+		if subKids[i].Name == "inner" {
+			innerDirNode = &subKids[i]
+		}
+	}
+	if innerDirNode == nil || !innerDirNode.Dir || !innerDirNode.Dirty {
+		t.Fatalf("expected sub/inner to be Dir=true and Dirty=true, got %+v", innerDirNode)
+	}
+
+	innerKids, ok := ix.Children("sub/inner")
+	if !ok {
+		t.Fatal("ix.Children(\"sub/inner\") failed")
+	}
+	var nestedNode *Node
+	for i := range innerKids {
+		if innerKids[i].Name == "nested.txt" {
+			nestedNode = &innerKids[i]
+		}
+	}
+	if nestedNode == nil || nestedNode.Dir || nestedNode.Status != "D" {
+		t.Fatalf("expected sub/inner/nested.txt to have Status=\"D\", got %+v", nestedNode)
+	}
+
+	// 2. Test /api/file and /api/diff endpoints for deleted file
+	srv := NewServer(ix, newLSPManager(ix.Root(), false))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	// /api/file for deleted root.txt
+	resp, err := http.Get(ts.URL + "/api/file?path=root.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/api/file?path=root.txt returned status %d, want 200", resp.StatusCode)
+	}
+	var fileData map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&fileData); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if fileData["deleted"] != true {
+		t.Fatalf("expected deleted=true, got %v", fileData["deleted"])
+	}
+	if fileData["diffAvailable"] != true {
+		t.Fatalf("expected diffAvailable=true, got %v", fileData["diffAvailable"])
+	}
+	if fileData["total"] != float64(0) {
+		t.Fatalf("expected total=0, got %v", fileData["total"])
+	}
+
+	// /api/diff for deleted root.txt
+	diffResp, err := http.Get(ts.URL + "/api/diff?path=root.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diffResp.StatusCode != http.StatusOK {
+		t.Fatalf("/api/diff?path=root.txt returned status %d, want 200", diffResp.StatusCode)
+	}
+	var diffData map[string]any
+	if err := json.NewDecoder(diffResp.Body).Decode(&diffData); err != nil {
+		t.Fatal(err)
+	}
+	diffResp.Body.Close()
+	if diffData["available"] != true {
+		t.Fatalf("expected diff available=true, got %v", diffData["available"])
+	}
+	diffStr, _ := diffData["diff"].(string)
+	if !strings.Contains(diffStr, "-root file content") {
+		t.Fatalf("expected diff to show deleted line, got:\n%s", diffStr)
+	}
+
+	// 3. Test restoring a file (git checkout -- root.txt)
+	gitTestRun(t, dir, "checkout", "--", "root.txt")
+	_, _, changed, statuses, _, _, _, _ := ix.UpdateGitStatus()
+	if !changed {
+		t.Fatal("expected UpdateGitStatus to report changed=true on restore")
+	}
+	if statuses["root.txt"] != "" {
+		t.Fatalf("expected root.txt status to be clean, got %q", statuses["root.txt"])
+	}
+	rootKidsAfter, _ := ix.Children("")
+	for _, k := range rootKidsAfter {
+		if k.Name == "root.txt" {
+			if k.Status != "" {
+				t.Fatalf("expected restored file to have Status=\"\", got %q", k.Status)
+			}
+		}
+	}
+
+	// 4. Test committing deletion of sub/inner/nested.txt
+	gitTestRun(t, dir, "rm", "-rf", "sub")
+	gitTestRun(t, dir, "commit", "-m", "remove sub")
+	ix.UpdateGitStatus()
+
+	// sub and sub/inner should now be removed from ix.children because they are empty and not on disk
+	if _, ok := ix.Children("sub"); ok {
+		t.Fatal("expected sub directory to be removed from children after commit")
+	}
+	rootKidsFinal, _ := ix.Children("")
+	for _, k := range rootKidsFinal {
+		if k.Name == "sub" {
+			t.Fatal("expected sub entry to be removed from root children after commit")
+		}
+	}
+}
+
+// unpushedRepo builds a clone with an upstream and two unpushed commits on top
+// of it: the first modifies one file, deletes another and adds a third; the
+// second appends a line. Returns the clone's root.
+func unpushedRepo(tb testing.TB) string {
+	tb.Helper()
+	base := tb.TempDir()
+	if r, err := filepath.EvalSymlinks(base); err == nil {
+		base = r
+	}
+	remote := filepath.Join(base, "remote.git")
+	clone := filepath.Join(base, "work")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		tb.Fatal(err)
+	}
+	gitTestRun(tb, remote, "init", "--bare", "-b", "main")
+	gitTestRun(tb, base, "clone", remote, "work")
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+		gitTestRun(tb, clone, "config", cfg[0], cfg[1])
+	}
+	write := func(rel, body string) {
+		tb.Helper()
+		p := filepath.Join(clone, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			tb.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			tb.Fatal(err)
+		}
+	}
+
+	write("a.txt", "one\ntwo\nthree\n")
+	write("gone.txt", "bye\n")
+	gitTestRun(tb, clone, "add", "-A")
+	gitTestRun(tb, clone, "commit", "-qm", "pushed commit")
+	gitTestRun(tb, clone, "push", "-q", "-u", "origin", "main")
+
+	write("a.txt", "one\nTWO\nthree\n")
+	write("added.txt", "new\n")
+	gitTestRun(tb, clone, "rm", "-q", "gone.txt")
+	gitTestRun(tb, clone, "add", "-A")
+	gitTestRun(tb, clone, "commit", "-qm", "local one\n\nBody of the first local commit.")
+
+	write("a.txt", "one\nTWO\nthree\nfour\n")
+	gitTestRun(tb, clone, "add", "-A")
+	gitTestRun(tb, clone, "commit", "-qm", "local two")
+	return clone
+}
+
+func TestGitUnpushedCommits(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := unpushedRepo(t)
+
+	upstream, commits := gitUnpushedCommits(root, 0)
+	if upstream != "origin/main" {
+		t.Fatalf("expected upstream origin/main, got %q", upstream)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("expected 2 unpushed commits, got %d: %+v", len(commits), commits)
+	}
+	// Newest first, and the pushed commit must not be in the list.
+	if commits[0].Subject != "local two" || commits[1].Subject != "local one" {
+		t.Fatalf("expected [local two, local one], got %q, %q", commits[0].Subject, commits[1].Subject)
+	}
+	if len(commits[0].Hash) != 40 || commits[0].Short == "" || commits[0].Author != "T" || commits[0].Date == "" {
+		t.Fatalf("incomplete commit record: %+v", commits[0])
+	}
+
+	// Pushing empties the list without touching the upstream name.
+	gitTestRun(t, root, "push", "-q")
+	upstream, commits = gitUnpushedCommits(root, 0)
+	if upstream != "origin/main" || len(commits) != 0 {
+		t.Fatalf("expected an empty list after push, got upstream=%q, %d commits", upstream, len(commits))
+	}
+}
+
+func TestGitUnpushedNoUpstream(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	// A repo with commits but no tracking branch: no list, and no guess at one.
+	dir := t.TempDir()
+	gitTestRun(t, dir, "init", "-b", "main")
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+		gitTestRun(t, dir, "config", cfg[0], cfg[1])
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, dir, "add", "-A")
+	gitTestRun(t, dir, "commit", "-qm", "only commit")
+
+	if ref := gitUpstreamRef(dir); ref != "" {
+		t.Fatalf("expected no upstream ref, got %q", ref)
+	}
+	upstream, commits := gitUnpushedCommits(dir, 0)
+	if upstream != "" || commits != nil {
+		t.Fatalf("expected nothing without an upstream, got %q / %+v", upstream, commits)
+	}
+}
+
+func TestGitCommitFilesAndDetail(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := unpushedRepo(t)
+	_, commits := gitUnpushedCommits(root, 0)
+	first := commits[1] // "local one": modify + delete + add
+
+	files := gitCommitFiles(root, first.Hash)
+	got := map[string]string{}
+	for _, f := range files {
+		got[f.Path] = f.Status
+	}
+	want := map[string]string{"a.txt": "M", "added.txt": "A", "gone.txt": "D"}
+	for path, status := range want {
+		if got[path] != status {
+			t.Fatalf("expected %s to be %q in the commit, got %q (all: %+v)", path, status, got[path], got)
+		}
+	}
+	if len(files) != len(want) {
+		t.Fatalf("expected exactly %d files, got %d: %+v", len(want), len(files), files)
+	}
+
+	d, ok := gitCommitDetail(root, first.Hash)
+	if !ok {
+		t.Fatal("expected commit detail for a known SHA")
+	}
+	if d.Subject != "local one" {
+		t.Fatalf("expected subject %q, got %q", "local one", d.Subject)
+	}
+	if !strings.Contains(d.Message, "Body of the first local commit.") {
+		t.Fatalf("expected the full message to carry the body, got %q", d.Message)
+	}
+	if d.Author != "T" || d.Email != "t@example.com" {
+		t.Fatalf("expected author T <t@example.com>, got %q <%q>", d.Author, d.Email)
+	}
+	if d.Files != 3 {
+		t.Fatalf("expected 3 files in the diffstat, got %d", d.Files)
+	}
+	// a.txt: +1/-1, added.txt: +1, gone.txt: -1
+	if d.Insertions != 2 || d.Deletions != 2 {
+		t.Fatalf("expected +2/-2, got +%d/-%d", d.Insertions, d.Deletions)
+	}
+	if d.DateISO == "" || d.Date == "" || d.Short == "" {
+		t.Fatalf("incomplete detail record: %+v", d)
+	}
+
+	// An unknown or malformed SHA is refused rather than handed to git.
+	if _, ok := gitCommitDetail(root, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"); ok {
+		t.Fatal("expected no detail for an unknown SHA")
+	}
+	if _, ok := gitCommitDetail(root, "--upload-pack=touch /tmp/pwn"); ok {
+		t.Fatal("expected a non-hex revision to be refused")
+	}
+	if files := gitCommitFiles(root, "HEAD~1"); files != nil {
+		t.Fatalf("expected only hex SHAs to be accepted, got %+v", files)
+	}
+}
+
+func TestGitCommitFilesLineCounts(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := unpushedRepo(t)
+	_, commits := gitUnpushedCommits(root, 0)
+	counts := map[string][2]int{}
+	for _, f := range gitCommitFiles(root, commits[1].Hash) {
+		counts[f.Path] = [2]int{f.Add, f.Del}
+	}
+	want := map[string][2]int{"a.txt": {1, 1}, "added.txt": {1, 0}, "gone.txt": {0, 1}}
+	for path, c := range want {
+		if counts[path] != c {
+			t.Errorf("%s: got +%d/-%d, want +%d/-%d", path, counts[path][0], counts[path][1], c[0], c[1])
+		}
+	}
+
+	// A binary file is flagged and carries no line counts.
+	dir := t.TempDir()
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = r // macOS TempDir is under /var -> /private/var; git reports the real path
+	}
+	gitTestRun(t, dir, "init", "-q", "-b", "main")
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+		gitTestRun(t, dir, "config", cfg[0], cfg[1])
+	}
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644)
+	gitTestRun(t, dir, "add", "-A")
+	gitTestRun(t, dir, "commit", "-qm", "base")
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\nTWO\nthree\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "img.bin"), []byte("\x00\x01\x02binary\x00"), 0o644)
+	gitTestRun(t, dir, "add", "-A")
+	gitTestRun(t, dir, "commit", "-qm", "modify and binary")
+	head := strings.TrimSpace(gitTestRun(t, dir, "rev-parse", "HEAD"))
+	byPath := map[string]CommitFile{}
+	for _, f := range gitCommitFiles(dir, head) {
+		byPath[f.Path] = f
+	}
+	if f := byPath["a.txt"]; f.Status != "M" || f.Add != 2 || f.Del != 1 || f.Binary {
+		t.Errorf("modify: got %+v, want M with +2/-1", f)
+	}
+	if f := byPath["img.bin"]; !f.Binary || f.Add != 0 || f.Del != 0 {
+		t.Errorf("binary: got %+v, want binary with no line counts", f)
+	}
+
+	// A merge counts only what it brought in against its first parent.
+	gitTestRun(t, dir, "checkout", "-q", "-b", "side")
+	os.WriteFile(filepath.Join(dir, "side.txt"), []byte("a\nb\n"), 0o644)
+	gitTestRun(t, dir, "add", "-A")
+	gitTestRun(t, dir, "commit", "-qm", "side work")
+	gitTestRun(t, dir, "checkout", "-q", "main")
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed on main\n"), 0o644)
+	gitTestRun(t, dir, "commit", "-qam", "main work")
+	gitTestRun(t, dir, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+	merge := strings.TrimSpace(gitTestRun(t, dir, "rev-parse", "HEAD"))
+	stats := gitCommitNumstat(dir, merge)
+	if len(stats) != 1 || stats["side.txt"] != (numstat{add: 2}) {
+		t.Errorf("merge numstat: got %+v, want only side.txt +2", stats)
+	}
+}
+
+func TestGitDiffCommitIsFrozenAgainstTheWorkingTree(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := unpushedRepo(t)
+	_, commits := gitUnpushedCommits(root, 0)
+	first := commits[1] // "local one" changed two -> TWO
+
+	diff := gitDiffCommit(root, "a.txt", first.Hash)
+	if !strings.Contains(diff, "-two") || !strings.Contains(diff, "+TWO") {
+		t.Fatalf("expected the commit's own change to a.txt, got:\n%s", diff)
+	}
+	// The later commit's "four" belongs to that commit, not this one.
+	if strings.Contains(diff, "+four") {
+		t.Fatalf("commit diff leaked a later commit's change:\n%s", diff)
+	}
+
+	added, modified, deleted := gitHunksCommit(root, "a.txt", first.Hash)
+	if len(modified) != 1 || modified[0] != 2 {
+		t.Fatalf("expected line 2 modified, got added=%v modified=%v deleted=%v", added, modified, deleted)
+	}
+
+	// Editing the working tree must not move a commit's diff.
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("wholly different\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if after := gitDiffCommit(root, "a.txt", first.Hash); after != diff {
+		t.Fatalf("a commit diff changed with the working tree:\nbefore:\n%s\nafter:\n%s", diff, after)
+	}
+
+	// A file the commit deleted still has a diff at that commit.
+	if d := gitDiffCommit(root, "gone.txt", first.Hash); !strings.Contains(d, "-bye") {
+		t.Fatalf("expected the deletion of gone.txt in the commit diff, got:\n%s", d)
+	}
+	// A file it never touched has none.
+	if d := gitDiffCommit(root, "a.txt", "notasha"); d != "" {
+		t.Fatalf("expected an empty diff for a bad ref, got:\n%s", d)
+	}
+}
+
+func TestGitDiffCommitRootCommit(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := unpushedRepo(t)
+	first := strings.TrimSpace(gitTestRun(t, root, "rev-list", "--max-parents=0", "HEAD"))
+	// The very first commit has no parent, so --root is what makes it diffable.
+	if files := gitCommitFiles(root, first); len(files) != 2 {
+		t.Fatalf("expected the root commit's 2 files, got %+v", files)
+	}
+	if d := gitDiffCommit(root, "a.txt", first); !strings.Contains(d, "+one") {
+		t.Fatalf("expected the root commit to show a.txt as added, got:\n%s", d)
+	}
+}
+
+func TestGithubAuthorURL(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	gitTestRun(t, dir, "init", "-b", "main")
+
+	// No remote at all: no link, never a broken one.
+	if got := githubAuthorURL(dir, "a@b.com", "A"); got != "" {
+		t.Fatalf("expected no author URL without a remote, got %q", got)
+	}
+
+	gitTestRun(t, dir, "remote", "add", "origin", "git@github.com:alice/my-repo.git")
+	// A noreply address is a login outright.
+	if got := githubAuthorURL(dir, "12345+octocat@users.noreply.github.com", "Octo"); got != "https://github.com/octocat" {
+		t.Fatalf("expected a profile link for a noreply address, got %q", got)
+	}
+	if got := githubAuthorURL(dir, "octocat@users.noreply.github.com", "Octo"); got != "https://github.com/octocat" {
+		t.Fatalf("expected a profile link for a legacy noreply address, got %q", got)
+	}
+	// Anything else can only be "this repo's commits by this address".
+	got := githubAuthorURL(dir, "alice@example.com", "Alice")
+	if !strings.Contains(got, "github.com/alice/my-repo/commits?author=alice%40example.com") {
+		t.Fatalf("expected an author-scoped commits link, got %q", got)
+	}
+
+	// A non-GitHub remote gets nothing rather than a GitHub URL for a GitLab repo.
+	gitTestRun(t, dir, "remote", "set-url", "origin", "git@gitlab.com:alice/my-repo.git")
+	if got := githubAuthorURL(dir, "alice@example.com", "Alice"); got != "" {
+		t.Fatalf("expected no author URL for a non-GitHub remote, got %q", got)
+	}
+}
+
+func TestUnpushedEndpoints(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := unpushedRepo(t)
+	ix := NewIndex(root)
+	ix.Build()
+	s := NewServer(ix, nil)
+	ts := httptest.NewServer(s.mux)
+	defer ts.Close()
+
+	getJSON := func(path string, into any) {
+		t.Helper()
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status %d", path, resp.StatusCode)
+		}
+		if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+	}
+
+	var list struct {
+		Available bool             `json:"available"`
+		Upstream  string           `json:"upstream"`
+		Commits   []UnpushedCommit `json:"commits"`
+	}
+	getJSON("/api/unpushed", &list)
+	if !list.Available || list.Upstream != "origin/main" || len(list.Commits) != 2 {
+		t.Fatalf("unexpected /api/unpushed payload: %+v", list)
+	}
+	sha := list.Commits[1].Hash // "local one"
+
+	var files struct {
+		SHA   string       `json:"sha"`
+		Files []CommitFile `json:"files"`
+	}
+	getJSON("/api/commitfiles?sha="+sha, &files)
+	if len(files.Files) != 3 {
+		t.Fatalf("expected 3 files from /api/commitfiles, got %+v", files.Files)
+	}
+
+	var detail CommitDetail
+	getJSON("/api/commitdetail?sha="+sha, &detail)
+	if detail.Subject != "local one" || detail.Files != 3 {
+		t.Fatalf("unexpected /api/commitdetail payload: %+v", detail)
+	}
+
+	// /api/diff and /api/gutter with a ref show the commit; without one they
+	// show the working tree, which here is clean.
+	var withRef struct {
+		Available bool   `json:"available"`
+		Diff      string `json:"diff"`
+		Ref       string `json:"ref"`
+	}
+	getJSON("/api/diff?path=a.txt&ref="+sha, &withRef)
+	if !withRef.Available || withRef.Ref != sha || !strings.Contains(withRef.Diff, "+TWO") {
+		t.Fatalf("unexpected /api/diff?ref payload: %+v", withRef)
+	}
+
+	var noRef struct {
+		Available bool `json:"available"`
+	}
+	getJSON("/api/diff?path=a.txt", &noRef)
+	if noRef.Available {
+		t.Fatal("expected no working-tree diff for a clean file when no ref is given")
+	}
+
+	var gut struct {
+		Available bool  `json:"available"`
+		Modified  []int `json:"modified"`
+	}
+	getJSON("/api/gutter?path=a.txt&ref="+sha, &gut)
+	if !gut.Available || len(gut.Modified) != 1 || gut.Modified[0] != 2 {
+		t.Fatalf("unexpected /api/gutter?ref payload: %+v", gut)
+	}
+
+	// A file the commit deleted has nothing on disk, but /api/file with the
+	// ref still opens it so its diff can be read.
+	var deleted struct {
+		Deleted       bool `json:"deleted"`
+		DiffAvailable bool `json:"diffAvailable"`
+	}
+	getJSON("/api/file?path=gone.txt&ref="+sha, &deleted)
+	if !deleted.Deleted || !deleted.DiffAvailable {
+		t.Fatalf("expected gone.txt to open as a deleted file at the commit, got %+v", deleted)
+	}
+	// Without the ref there is nothing to show: the file is gone and clean.
+	resp, err := http.Get(ts.URL + "/api/file?path=gone.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for a long-deleted file with no ref, got %d", resp.StatusCode)
+	}
+}
+
+func TestUnpushedEndpointWithoutUpstream(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	// gitRepo has no remote, so the section must report itself unavailable
+	// rather than fall back to some other branch.
+	root := gitRepo(t)
+	ix := NewIndex(root)
+	ix.Build()
+	s := NewServer(ix, nil)
+	ts := httptest.NewServer(s.mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/unpushed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var list struct {
+		Available bool             `json:"available"`
+		Upstream  string           `json:"upstream"`
+		Commits   []UnpushedCommit `json:"commits"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Available || list.Upstream != "" || len(list.Commits) != 0 {
+		t.Fatalf("expected an unavailable, empty list without an upstream, got %+v", list)
+	}
+}
+
+func TestRemoteHostPath(t *testing.T) {
+	cases := []struct {
+		raw, host, path string
+		ok              bool
+	}{
+		{"git@github.com:alice/repo.git", "github.com", "alice/repo", true},
+		{"ssh://git@gitlab.com/alice/repo.git", "gitlab.com", "alice/repo", true},
+		{"https://token@github.com/alice/repo.git", "github.com", "alice/repo", true},
+		{"http://git.example.com/alice/repo", "git.example.com", "alice/repo", true},
+		{"/srv/git/repo.git", "", "", false},
+		{"", "", "", false},
+	}
+	for _, c := range cases {
+		host, path, ok := remoteHostPath(c.raw)
+		if ok != c.ok || host != c.host || path != c.path {
+			t.Fatalf("remoteHostPath(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				c.raw, host, path, ok, c.host, c.path, c.ok)
+		}
+	}
+}

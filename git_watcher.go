@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -203,7 +202,7 @@ func (gw *GitWatcher) Refresh() GitStatusPayload {
 		if len(recentCommits) > 0 {
 			headCommit = recentCommits[0].Hash
 		}
-		ahead, behind, _ = gitAheadBehind(gw.root)
+		ahead, behind = gw.aheadBehind()
 		gw.mu.Lock()
 		if headCommit != gw.lastHeadCommit || ahead != gw.lastAhead || behind != gw.lastBehind {
 			gw.lastHeadCommit = headCommit
@@ -240,6 +239,18 @@ func (gw *GitWatcher) Refresh() GitStatusPayload {
 	return payload
 }
 
+// aheadBehind counts local commits not yet on the remote. In a PR review the
+// checkout is a detached HEAD with no upstream, so "ahead" is measured from the
+// PR head it was checked out at (or last pushed to) -- exactly the reviewer's
+// own commits. Behind stays 0 there: knowing it needs a fetch, which Pull does.
+func (gw *GitWatcher) aheadBehind() (ahead, behind int) {
+	if head := gw.ix.PushedHead(); head != "" {
+		return gitCountSince(gw.root, head), 0
+	}
+	ahead, behind, _ = gitAheadBehind(gw.root)
+	return ahead, behind
+}
+
 // checkAndBroadcast runs UpdateGitStatus and broadcasts to subscribers if changed.
 // Returns duration of the status check.
 func (gw *GitWatcher) checkAndBroadcast() time.Duration {
@@ -272,41 +283,7 @@ func (gw *GitWatcher) Subscribe() (<-chan []byte, func()) {
 	inGit := gitAvailable(gw.root)
 	var initialMsg []byte
 	if inGit {
-		count, files := gw.ix.GitChanges()
-		statuses := gw.ix.GitStatusMap()
-		staged := gw.ix.GitStagedMap()
-		yourStatuses := gw.ix.GitYourStatusMap()
-		dirtyDirs := map[string]bool{}
-		for p := range statuses {
-			for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-				p = p[:i]
-				dirtyDirs[p] = true
-			}
-		}
-		yourDirtyDirs := map[string]bool{}
-		for p := range yourStatuses {
-			for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-				p = p[:i]
-				yourDirtyDirs[p] = true
-			}
-		}
-		branch := gitCurrentBranch(gw.root)
-		ahead, behind, _ := gitAheadBehind(gw.root)
-		payload := GitStatusPayload{
-			Git:           true,
-			GitChanges:    count,
-			GitFiles:      files,
-			Statuses:      statuses,
-			DirtyDirs:     dirtyDirs,
-			Staged:        staged,
-			YourStatuses:  yourStatuses,
-			YourDirtyDirs: yourDirtyDirs,
-			Branch:        branch,
-			RecentCommits: gitRecentCommits(gw.root, 5),
-			CommitsURL:    gitCommitsWebURL(gw.root, branch),
-			Ahead:         ahead,
-			Behind:        behind,
-		}
+		payload := gw.Refresh()
 		if data, err := json.Marshal(payload); err == nil {
 			initialMsg = []byte(fmt.Sprintf("event: git-status\ndata: %s\n\n", data))
 		}

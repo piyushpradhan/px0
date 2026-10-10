@@ -1,5 +1,5 @@
 // web/src/thread.js
-import { $, $$, esc, doc_, api, apiPost, apiPostJson, applyKeyLabels } from './state.js';
+import { $, $$, S, esc, doc_, api, apiPost, apiPostJson, applyKeyLabels } from './state.js';
 import { on } from './bus.js';
 import { showToast, copyToClipboard } from './ui.js';
 import { openFile } from './tabs.js';
@@ -28,6 +28,7 @@ const thr = {
   cur: null,          // the open thread, as last received
   draft: null,        // {path, l1, l2} for a thread not yet created, or {} for a workspace-level one
   listEs: null,
+  opening: null,      // id of the thread being fetched, so a late reply for another one is dropped
   threadEs: null,
   sending: false,
 };
@@ -88,13 +89,13 @@ function thrInline(src) {
   };
 
   // Images: ![alt](url)
-  s = s.replace(/!\[([^\]]*)\]\(((?:[^()]+|\([^()]*\))*)\)/g, (_, alt, url) => {
+  s = s.replace(/!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))*)\)/g, (_, alt, url) => {
     const u = thrSafeUrl(url);
     return u ? pushLink(`<img src="${u}" alt="${esc(alt)}" class="thr-img" />`) : esc(alt);
   });
 
   // Links: [text](url)
-  s = s.replace(/\[([^\]]+)\]\(((?:[^()]+|\([^()]*\))*)\)/g, (_, text, url) => {
+  s = s.replace(/\[([^\]]+)\]\(((?:[^()]|\([^()]*\))*)\)/g, (_, text, url) => {
     const u = thrSafeUrl(url);
     if (!u) return text;
     const m = /^([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+)(?::(\d+))?$/.exec(url.trim());
@@ -378,7 +379,9 @@ function thrDrawList() {
   thrEl.list.innerHTML = items.map(t =>
     '<div class="thr-item' + (thr.cur && thr.cur.id === t.id ? ' sel' : '') + '" data-id="' + esc(t.id) + '" role="button" tabindex="0">' +
     '<div class="thr-item-title">' + (t.running ? '<span class="thr-spin" title="Working"></span>' : t.failed ? '<span class="thr-fail" title="Last reply failed">!</span>' : '') +
-    '<span>' + esc(t.title) + '</span>' + (t.kind ? '<span class="thr-kind">' + (t.kind === 'batch' ? 'batch' : 'inline') + '</span>' : '') + '</div>' +
+    '<span class="thr-item-title-text">' + esc(t.title) + '</span>' + (t.kind ? '<span class="thr-kind">' + (t.kind === 'batch' ? 'batch' : 'inline') + '</span>' : '') +
+    '<button class="thr-item-del mini" data-del="' + esc(t.id) + '" title="Delete this thread" aria-label="Delete thread"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>' +
+    '</div>' +
     '<div class="thr-item-meta"><span class="thr-item-ref">' + esc(thrRefText(t)) + '</span>' +
     '<span>' + t.turns + (t.turns === 1 ? ' turn' : ' turns') + ' · ' + thrAgo(t.updated) + '</span></div></div>').join('');
 }
@@ -467,6 +470,43 @@ function thrRenderMsgs() {
   if (stick) box.scrollTop = box.scrollHeight;
 }
 
+/* PR review: what the thread is about. The default comes from where you are --
+   the editor section a selection was made in, then the sidebar's Yours / PR
+   changes switch, else the whole PR -- and the chips override it. */
+function thrDefaultScope(info) {
+  const sel = getSelection();
+  const sec = (sel && sel.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement) : null)?.closest?.('.diff-section');
+  if (sec?.classList.contains('diff-section-you')) return 'mine';
+  if (sec?.classList.contains('diff-section-pr')) return 'pr';
+  return $('#tree')?.classList.contains('scope-yours') ? 'mine' : 'pr';
+}
+
+function thrRenderScope() {
+  const el = $('#thr-scope');
+  if (!el) return;
+  const t = thr.cur || thr.draft;
+  el.hidden = !S.meta?.pr || !t;
+  if (el.hidden) return;
+  const scope = t.scope || 'pr';
+  const anchored = !!t.path;
+  for (const b of el.querySelectorAll('button[data-scope]')) {
+    const on_ = b.dataset.scope === scope;
+    b.classList.toggle('active', on_);
+    b.setAttribute('aria-pressed', on_ ? 'true' : 'false');
+    if (b.dataset.scope === 'selection') b.disabled = !anchored;
+  }
+}
+
+async function thrPickScope(scope) {
+  if (thr.cur) {
+    try { thr.cur = await apiPostJson('/api/threads/scope', { id: thr.cur.id, scope }); }
+    catch (e) { showToast('!', e.message); return; }
+  } else if (thr.draft) {
+    thr.draft.scope = scope;
+  }
+  thrRenderScope();
+}
+
 function thrRenderState() {
   const running = thrRunning();
   thrEl.title.textContent = thr.cur ? thr.cur.title : 'New thread';
@@ -475,6 +515,7 @@ function thrRenderState() {
   thrEl.send.disabled = running || thr.sending;
   thrEl.hint.textContent = running ? 'Working. You can send the next message once it replies.' : 'Enter to send, Shift+Enter for a new line';
   thrRenderAnchor();
+  thrRenderScope();
   thrRenderMsgs();
   thrDrawList();
 }
@@ -521,18 +562,32 @@ function thrOpenStream(id) {
   es.onerror = () => { /* EventSource reconnects on its own and resends a snapshot */ };
 }
 
-export function openThread(id) {
+export async function openThread(id) {
   thr.draft = null;
   thr.cur = null;
+  thrCloseStream();
   showRightInspector('threads');
   thrShow('thread');
   thrEl.msgs.innerHTML = '<div class="hint">Loading…</div>';
   thrEl.title.textContent = 'Thread';
   thrEl.del.hidden = true;
-  thrOpenStream(id);
+  thr.opening = id;
+  // A plain request shows a saved thread at once. The live stream is only for
+  // a turn still being written, so browsing past threads never waits on it.
+  try {
+    const t = await api('/api/threads/get', { id });
+    if (thr.opening !== id) return;
+    thr.cur = t;
+    thrRenderState();
+    if (thrRunning()) thrOpenStream(id);
+  } catch (e) {
+    if (thr.opening !== id) return;
+    thrEl.msgs.innerHTML = '<div class="hint">Could not load this thread: ' + esc(e.message) + '</div>';
+  }
 }
 
 function thrBack() {
+  thr.opening = null;
   thrCloseStream();
   thr.cur = null;
   thr.draft = null;
@@ -544,9 +599,11 @@ function thrBack() {
    omitted. Nothing is created on the server until the first message is sent. */
 export function newThread(info) {
   if (!thr.avail) { showToast('!', 'Threads need a coding harness: run px0 without -no-agent'); return; }
+  thr.opening = null;
   thrCloseStream();
   thr.cur = null;
   thr.draft = info && info.path ? { path: info.path, l1: info.l1, l2: info.l2 } : {};
+  if (S.meta?.pr) thr.draft.scope = thrDefaultScope(info);
   showRightInspector('threads');
   thrShow('thread');
   thrRenderState();
@@ -567,6 +624,7 @@ async function thrSend() {
       thrOpenStream(t.id);
     } else if (thr.cur) {
       await apiPostJson('/api/threads/send', { id: thr.cur.id, message });
+      if (!thr.threadEs) thrOpenStream(thr.cur.id);
     } else {
       return;
     }
@@ -577,6 +635,24 @@ async function thrSend() {
     thr.sending = false;
     thrRenderState();
   }
+}
+
+export async function deleteThread(id) {
+  if (!id) return;
+  const t = thr.list.find(x => x.id === id) || (thr.cur?.id === id ? thr.cur : null);
+  const title = t?.title ? `"${t.title}"` : 'this thread';
+  if (!confirm(`Delete ${title} and its transcript?`)) return;
+  try {
+    await apiPost('/api/threads/delete', { id });
+    if (thr.cur && thr.cur.id === id) thrBack();
+  } catch (e) {
+    showToast('!', e.message);
+  }
+}
+
+export function deleteCurrentThread() {
+  if (thr.cur) deleteThread(thr.cur.id);
+  else showToast('!', 'No thread currently open');
 }
 
 export function initThreads() {
@@ -591,6 +667,10 @@ export function initThreads() {
   thrEl.send = $('#thr-send');
   thrEl.stop = $('#thr-stop');
   thrEl.hint = $('#thr-hint');
+  $('#thr-scope')?.addEventListener('click', e => {
+    const b = e.target.closest('button[data-scope]');
+    if (b && !b.disabled) thrPickScope(b.dataset.scope);
+  });
   if (!thrEl.listView) return;
 
   setThreadHandler(newThread);
@@ -602,12 +682,8 @@ export function initThreads() {
   thrEl.stop.addEventListener('click', () => {
     if (thr.cur) apiPost('/api/threads/cancel', { id: thr.cur.id }).catch(e => showToast('!', e.message));
   });
-  thrEl.del.addEventListener('click', async () => {
-    if (!thr.cur || !confirm('Delete this thread and its transcript?')) return;
-    try {
-      await apiPost('/api/threads/delete', { id: thr.cur.id });
-      thrBack();
-    } catch (e) { showToast('!', e.message); }
+  thrEl.del.addEventListener('click', () => {
+    if (thr.cur) deleteThread(thr.cur.id);
   });
   thrEl.input.addEventListener('keydown', e => {
     // Typing here must not trigger editor shortcuts, or Esc closing the sidebar.
@@ -636,11 +712,28 @@ export function initThreads() {
     if (f) openFile(f.dataset.path);
   });
   const openFromList = e => {
+    const delBtn = /** @type {HTMLElement|null} */ (e.target)?.closest('[data-del]');
+    if (delBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      deleteThread(delBtn.dataset.del);
+      return;
+    }
     const item = /** @type {HTMLElement|null} */ (e.target)?.closest('.thr-item');
     if (item) openThread(item.dataset.id);
   };
   thrEl.list.addEventListener('click', openFromList);
-  thrEl.list.addEventListener('keydown', e => { if (e.key === 'Enter') openFromList(e); });
+  thrEl.list.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      openFromList(e);
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      const item = /** @type {HTMLElement|null} */ (e.target)?.closest('.thr-item');
+      if (item && item.dataset.id) {
+        e.preventDefault();
+        deleteThread(item.dataset.id);
+      }
+    }
+  });
   $$('[data-thr-filter]').forEach(b => b.addEventListener('click', () => {
     thr.filter = b.dataset.thrFilter;
     $$('[data-thr-filter]').forEach(x => x.classList.toggle('on', x === b));

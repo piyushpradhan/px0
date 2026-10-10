@@ -41,7 +41,7 @@ func TestIgnorePatterns(t *testing.T) {
 		{"src/vendor.go", false, false},
 	}
 	for _, c := range cases {
-		if got := ig.match(c.path, c.dir); got != c.want {
+		if got := ig.Match(c.path, c.dir); got != c.want {
 			t.Errorf("match(%q, dir=%v) = %v, want %v", c.path, c.dir, got, c.want)
 		}
 	}
@@ -164,6 +164,84 @@ func TestThemesStylesheetJoinsEveryThemeFile(t *testing.T) {
 				t.Errorf("%s: missing required token %s", f, tok)
 			}
 		}
+	}
+}
+
+func TestStaticAssetServing(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// 1. Serving uncompressed assets (e.g. style.css)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/style.css", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("style.css status %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {
+		t.Errorf("style.css content-type: %s", ct)
+	}
+
+	// 2. Serving compressed vendor assets with Accept-Encoding: gzip
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/static/vendor/mermaid-12.0.0.min.js", nil)
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mermaid gzip status %d", rec.Code)
+	}
+	if ce := rec.Header().Get("Content-Encoding"); ce != "gzip" {
+		t.Errorf("mermaid content-encoding = %q, want gzip", ce)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Errorf("mermaid content-type = %q, want text/javascript", ct)
+	}
+	gzr, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatalf("failed to create gzip reader: %v", err)
+	}
+	decompressed, err := io.ReadAll(gzr)
+	gzr.Close()
+	if err != nil {
+		t.Fatalf("failed to decompress gzip body: %v", err)
+	}
+	if bytes.HasPrefix(decompressed, []byte("\x1f\x8b")) {
+		t.Errorf("decompressed mermaid body is still gzipped (double gzip detected)")
+	}
+	if !strings.HasPrefix(string(decompressed), "\"use strict\";") {
+		t.Errorf("decompressed mermaid body missing expected javascript prefix")
+	}
+	if !strings.Contains(string(decompressed), "mermaid") {
+		t.Errorf("decompressed mermaid body missing 'mermaid' keyword")
+	}
+
+	// 3. Serving compressed vendor assets without Accept-Encoding: gzip (transparent decompression)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/static/vendor/mermaid-12.0.0.min.js", nil)
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mermaid uncompressed status %d", rec.Code)
+	}
+	if ce := rec.Header().Get("Content-Encoding"); ce != "" {
+		t.Errorf("mermaid content-encoding without gzip request = %q, want none", ce)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Errorf("mermaid content-type = %q, want text/javascript", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "mermaid") {
+		t.Errorf("uncompressed mermaid body missing 'mermaid' keyword")
+	}
+
+	// 4. Missing static file returns 404
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/nonexistent.js", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("missing asset status = %d, want 404", rec.Code)
+	}
+
+	// 5. Path traversal attempts are rejected (never 200 OK)
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/../server.go", nil))
+	if rec.Code == http.StatusOK {
+		t.Errorf("traversal returned 200 OK")
 	}
 }
 
@@ -390,18 +468,18 @@ func TestIgnoreFastPathMatchesRegex(t *testing.T) {
 			if !ok {
 				t.Fatalf("%q: regex form failed to compile", full)
 			}
-			if r.kind != rkRegex {
-				if slow.re == nil || slow.sub == nil {
+			if r.Kind != rkRegex {
+				if slow.Re == nil || slow.Sub == nil {
 					t.Fatalf("%q: reference rule has no regexps", full)
 				}
 			}
 			for _, p := range paths {
 				for _, isDir := range []bool{false, true} {
-					got := r.hit(p, isDir)
-					want := slow.hit(p, isDir)
+					got := r.Hit(p, isDir)
+					want := slow.Hit(p, isDir)
 					if got != want {
 						t.Errorf("pattern %q path %q dir=%v: fast=%v regex=%v (kind=%d lit=%q)",
-							full, p, isDir, got, want, r.kind, r.lit)
+							full, p, isDir, got, want, r.Kind, r.Lit)
 					}
 				}
 			}
@@ -415,7 +493,7 @@ func compileRegexOnly(p string) (rule, bool) {
 	if !ok {
 		return r, false
 	}
-	if r.kind == rkRegex {
+	if r.Kind == rkRegex {
 		return r, true
 	}
 	// Re-derive the regexp form by compiling a pattern that cannot be
@@ -806,6 +884,25 @@ func TestServerBasePathRouting(t *testing.T) {
 	}
 }
 
+func TestNetworkURLs(t *testing.T) {
+	addrs := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("192.168.1.20"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+		&net.IPNet{IP: net.ParseIP("10.0.0.4"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("192.168.1.20"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("2001:db8::1"), Mask: net.CIDRMask(64, 128)},
+	}
+
+	got := networkURLsFromAddrs("0.0.0.0:7777", "main.go", 42, addrs)
+	want := []string{
+		"http://10.0.0.4:7777?line=42&path=main.go",
+		"http://192.168.1.20:7777?line=42&path=main.go",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("networkURLsFromAddrs = %v, want %v", got, want)
+	}
+}
+
 func TestVersionDrivenFromVERSIONFile(t *testing.T) {
 	data, err := os.ReadFile("VERSION")
 	if err != nil {
@@ -1137,6 +1234,132 @@ func TestFuzzyCaseSensitivity(t *testing.T) {
 	}
 	if res[0].Path != "src/HTTPServer.go" {
 		t.Errorf("expected 'src/HTTPServer.go' to rank higher for query 'HTTPServer', got: %s", res[0].Path)
+	}
+}
+
+func TestSetRawHeaders(t *testing.T) {
+	cases := []struct {
+		path            string
+		wantContentType string
+		wantFilename    string
+	}{
+		{"index.html", "application/octet-stream", "index.html"},
+		{"app.js", "application/octet-stream", "app.js"},
+		{"main.go", "application/octet-stream", "main.go"},
+		{"nested/path/style.css", "application/octet-stream", "style.css"},
+		{"assets/logo.png", "image/png", "logo.png"},
+		{"assets/photo.jpg", "image/jpeg", "photo.jpg"},
+		{"assets/anim.gif", "image/gif", "anim.gif"},
+		{"assets/vector.svg", "image/svg+xml", "vector.svg"},
+		{"assets/icon.ico", "image/x-icon", "icon.ico"},
+		{"assets/pic.webp", "image/webp", "pic.webp"},
+	}
+
+	for _, c := range cases {
+		rec := httptest.NewRecorder()
+		setRawHeaders(rec, c.path)
+
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: got nosniff header %q, want 'nosniff'", c.path, got)
+		}
+
+		gotCT := rec.Header().Get("Content-Type")
+		if strings.HasPrefix(c.wantContentType, "image/") {
+			if !strings.HasPrefix(gotCT, "image/") {
+				t.Errorf("%s: got Content-Type %q, want image/*", c.path, gotCT)
+			}
+		} else if gotCT != c.wantContentType {
+			t.Errorf("%s: got Content-Type %q, want %q", c.path, gotCT, c.wantContentType)
+		}
+
+		gotCD := rec.Header().Get("Content-Disposition")
+		if !strings.HasPrefix(gotCD, "attachment") || !strings.Contains(gotCD, c.wantFilename) {
+			t.Errorf("%s: got Content-Disposition %q, expected attachment containing %q", c.path, gotCD, c.wantFilename)
+		}
+	}
+}
+
+func TestRawEndpointHeaders(t *testing.T) {
+	s, root := newTestServer(t)
+
+	// Create test files
+	files := map[string]string{
+		"evil.html": "<!DOCTYPE html><html><script>alert(1)</script></html>",
+		"icon.svg":  `<svg xmlns="http://www.w3.org/2000/svg"><circle r="10"/></svg>`,
+		"data.json": `{"foo": "bar"}`,
+	}
+	for rel, content := range files {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		rel             string
+		wantContentType string
+		wantDisposition string
+	}{
+		{"main.go", "application/octet-stream", "main.go"},
+		{"evil.html", "application/octet-stream", "evil.html"},
+		{"data.json", "application/octet-stream", "data.json"},
+		{"icon.svg", "image/svg+xml", "icon.svg"},
+	}
+
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/raw?path="+url.QueryEscape(tc.rel), nil)
+		s.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d (body: %s)", tc.rel, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", tc.rel, got)
+		}
+		if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, tc.wantContentType) {
+			t.Errorf("%s: Content-Type = %q, want %q", tc.rel, got, tc.wantContentType)
+		}
+		if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, tc.wantDisposition) {
+			t.Errorf("%s: Content-Disposition = %q, want %q", tc.rel, got, tc.wantDisposition)
+		}
+	}
+}
+
+func TestContentSecurityPolicyHeader(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	endpoints := []string{"/", "/api/meta", "/api/raw?path=main.go"}
+	for _, ep := range endpoints {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, ep, nil)
+		s.ServeHTTP(rec, req)
+
+		csp := rec.Header().Get("Content-Security-Policy")
+		if csp == "" {
+			t.Fatalf("%s: missing Content-Security-Policy header", ep)
+		}
+		if csp != contentSecurityPolicy {
+			t.Errorf("%s: got CSP %q, want %q", ep, csp, contentSecurityPolicy)
+		}
+
+		requiredDirectives := []string{
+			"default-src 'self'",
+			"script-src 'self'",
+			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+			"font-src 'self' https://fonts.gstatic.com",
+			"img-src 'self' data: https: http:",
+			"connect-src 'self'",
+			"object-src 'none'",
+			"base-uri 'self'",
+			"frame-ancestors 'none'",
+			"form-action 'none'",
+		}
+		for _, dir := range requiredDirectives {
+			if !strings.Contains(csp, dir) {
+				t.Errorf("%s: CSP missing directive %q", ep, dir)
+			}
+		}
 	}
 }
 

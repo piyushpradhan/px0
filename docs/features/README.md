@@ -19,7 +19,8 @@ This directory provides comprehensive documentation for all px0 user-facing feat
 | **Coding Agent Editing** | `Alt+E`, Right-click | Delegating edits to Claude Code, Gemini CLI, Cursor Agent, and more | [Agent Editing](agent-editing.md) |
 | **Threads** | `Alt+T` | Long-running, multi-turn conversations with your coding harness that can read and change any file, with per-turn changed files | [Threads](threads.md) |
 | **Semantic Code Intelligence** | `F12`, `Shift+F12`, `Alt+Shift+H` | Go to Definition, Find References, Call Trails, and Hover docs | [LSP & Intelligence](lsp-code-intelligence.md) |
-| **Markdown Preview** | `Alt+M` | Full GFM preview, syntax-highlighted code fences, and scroll sync | [Markdown Preview](markdown-preview.md) |
+| **Markdown Preview** | `Alt+M` | Full GFM preview, Mermaid diagrams, syntax-highlighted code fences, and scroll sync | [Markdown Preview](markdown-preview.md) |
+| **CSV / TSV Table View** | `Alt+M` | Data files open as a table with a sticky header and source-line gutter | [Table View](table-view.md) |
 | **Image Viewer & Assets** | Click image file / lightbox | Standalone image tabs, zoom/pan transforms, and markdown lightbox | [Image Viewer](image-viewer.md) |
 | **Settings & Preferences** | `Cmd/Ctrl+,` | Graphical form editor, raw JSON sync, and instant live preview | [Settings & Configuration](settings-and-configuration.md) |
 | **Syntax Highlighting** | Automatic | Viewport-windowed Chroma lexing for ~280 languages | [Syntax Highlighting](syntax-highlighting.md) |
@@ -77,6 +78,7 @@ px0 intentionally omits a heavyweight text editor in favor of direct collaborati
 Repositories contain documentation, architecture notes, and graphical assets alongside code:
 
 - **[Rendered Markdown Preview](markdown-preview.md)**: Read project documentation, RFCs, and README files in rendered GitHub Flavored Markdown (GFM) mode (`Alt+M`), complete with tables, task lists, footnotes, and GitHub-style alert callouts (`[!NOTE]`, `[!WARNING]`). Features bi-directional scroll synchronization and one-click copy buttons on code blocks.
+- **[CSV & TSV Table View](table-view.md)**: Open `.csv` and `.tsv` files as a table (`Alt+M` toggles the source). Quoted cells with commas and line breaks parse correctly, the header row stays pinned, and a gutter numbers each row by its source line so find and go-to-line still line up. Large files show the first 1,000 rows.
 - **[Image Viewer & Asset Inspection](image-viewer.md)**: Open image files (PNG, SVG, JPG, WebP, GIF, etc.) as native interactive tabs. Smoothly zoom up to 3200%, pan freely, toggle alpha background modes (checkerboard, dark matte, light matte), switch between bilinear smoothing and pixelated rendering, and click inline Markdown images to inspect them in a modal lightbox.
 
 ---

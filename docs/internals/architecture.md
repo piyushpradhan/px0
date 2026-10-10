@@ -23,6 +23,7 @@ sequenceDiagram
     autonumber
     participant CLI as main() CLI Entrypoint
     participant Net as TCP Listener
+    participant OS as Network Interfaces
     participant Browser as Host Browser
     participant Srv as HTTP Server Router
     participant Index as Background Indexer
@@ -31,6 +32,11 @@ sequenceDiagram
     CLI->>Net: listen(host, port)
     Note over CLI,Net: Binds socket in <0.2ms
     CLI->>Srv: NewServer(Index, LSP)
+    opt host is 0.0.0.0
+        CLI->>OS: InterfaceAddrs()
+        OS-->>CLI: Interface addresses
+        CLI->>CLI: Print sorted non-loopback IPv4 URLs
+    end
     CLI->>Browser: go openBrowser(url) [Non-blocking]
     CLI->>Index: go ix.Build() [Background Goroutine]
     CLI->>LSP: go lsp.Available() [Background Goroutine]
@@ -45,6 +51,7 @@ sequenceDiagram
 
 1. Target Resolution: Directories become workspace roots. For a file target, its repository or project root is detected as the workspace, and its relative path (with optional line number) is retained for the initial browser tab.
 1. Socket Binding: `listen(*host, *port)` binds an ephemeral or user-specified TCP socket immediately.
+1. Network URL Discovery: When the listener binds to `0.0.0.0`, `net.InterfaceAddrs()` supplies the host's interface addresses. px0 keeps unique non-loopback IPv4 addresses, sorts them for deterministic output, and prints each with the listener's final port. Initial file and line query parameters are preserved in every advertised URL.
 1. Instant Root Tree Extraction: Before descending into subdirectories, `ix.Build()` extracts and populates the root directory entries (`dir=""`), publishing them directly to `ix.children[""]`. When the browser makes its initial request to `/api/tree`, it immediately renders the root tree nodes without waiting for the deep repository scan to finish.
 
 1. Non-Blocking Browser Launch: `go openBrowser(url)` spawns the platform-specific browser opener (`xdg-open` on Linux, `open` on macOS, `rundll32` on Windows) in a separate goroutine.
@@ -67,15 +74,16 @@ When hosted behind reverse proxies or multi-tenant review platforms, px0 support
 
 | Endpoint              | Method | Purpose                                                                 | Response Format                            |
 | --------------------- | ------ | ----------------------------------------------------------------------- | ------------------------------------------ |
-| `/`                   | `GET`  | Serves `web/index.html` (embedded or `-dev` disk copy)                  | `text/html; charset=utf-8`                 |
+| `/`                   | `GET`  | Serves `web/index.html` (embedded)                                      | `text/html; charset=utf-8`                 |
 | `/static/*`           | `GET`  | Serves bundled JavaScript, CSS, and static assets                       | Asset MIME type                            |
 | `/static/themes.css`  | `GET`  | Concatenates all `web/themes/*.css` files in alphanumeric order         | `text/css; charset=utf-8`                  |
 | `/api/meta`           | `GET`  | Workspace metadata (root path, file count, index duration, git status)  | JSON (`{root, name, files, build_ms, git}`)|
 | `/api/metrics`        | `GET`  | Point-in-time process memory, CPU, and goroutine stats (polled via `/api/stream` SSE) | JSON (`{rssBytes, cpuUsage, goroutines}`)|
 | `/api/tree`           | `GET`  | Directory contents for the sidebar file explorer (`?dir=path`)          | JSON array of `Node` objects               |
 | `/api/file`           | `GET`  | Windowed, highlighted source file lines (`?path=...&start=0&count=500`) | JSON (`{lines, total, refine, markdown}`)  |
-| `/api/raw`            | `GET`  | Raw, unhighlighted file content for whole-file copies and preview assets| `text/plain` or binary                     |
+| `/api/raw`            | `GET`  | Raw file content for copies and preview assets (attachment; nosniff)    | `application/octet-stream` or `image/*`    |
 | `/api/markdown`       | `GET`  | Converted HTML preview of `.md` / `.markdown` files via goldmark        | JSON (`{path, html}`)                      |
+| `/api/table`          | `GET`  | First 1,000 rows (or 1 MB) of a `.csv` / `.tsv` file, parsed with `encoding/csv` | JSON (`{header, headerLine, rows, cols, truncated}`) |
 | `/api/find`           | `GET`  | Fast fuzzy match against all indexed workspace paths (`?q=...`)         | JSON array of `FuzzyResult` objects        |
 | `/api/search`         | `GET`  | Full-text project grep with snippet elision (`?q=...&case=...&regex=...`)| JSON array of file hits and matches        |
 | `/api/outline`        | `GET`  | Regex-extracted symbol outline for a given file (`?path=...`)          | JSON array of symbol declarations          |
@@ -93,7 +101,9 @@ When hosted behind reverse proxies or multi-tenant review platforms, px0 support
 | `/api/lsp/warm`       | `POST` | Pre-warms or spawns language server for given file extension            | JSON (`{ok: true}`)                        |
 | `/api/lsp/setup`      | `GET`  | Reports install status and commands for current file language           | JSON (`{installed, recipes, ...}`)         |
 | `/api/lsp/install`    | `POST` | Executes user-level installer in background                             | JSON (`{ok: true}`)                        |
-| `/api/lsp/start`      | `POST` | Rescans and starts language server after installation                   | JSON (`{ok: true}`)                        |
+| `/api/lsp/start`      | `POST` | Starts language server for path or server name (`?server=...` or `?path=...`) | JSON status payload        |
+| `/api/lsp/stop`       | `POST` | Stops language server (`?server=...`) or all running language servers   | JSON status payload        |
+| `/api/lsp/servers`    | `GET`  | Lists relevant language servers for workspace with status and metrics   | JSON (`{enabled, anyRunning, servers}`)|
 | `/api/agent/harnesses`| `GET`  | Detected coding harnesses and the current choice                        | JSON (`{harnesses, selected, pinned, settings}`) |
 | `/api/agent/select`   | `POST` | Choose and remember a harness (`?name=...`)                             | JSON (`{harnesses, selected, pinned, settings}`) |
 | `/api/agent/edit`     | `POST` | Dispatch an instruction to the harness (`?path=...&l1=...&l2=...&instruction=...`) | JSON job snapshot               |
@@ -180,6 +190,32 @@ The `/api/lsp/install` and `/api/lsp/start` endpoints execute shell commands (e.
 1. The request `Origin` header must match the request `Host` header.
 1. The `Host` header is validated to ensure it is strictly an IP address (`127.0.0.1`, `[::1]`) or `localhost`. This prevents DNS-rebinding attacks.
 1. The executed command is never supplied by the client; it is looked up exclusively from the hard-coded internal `lspRegistry`, or, for agent edits, from the harness the user picked (only the instruction text comes from the client).
+
+### Content Security Policy (CSP)
+
+`ServeHTTP` sets a strict `Content-Security-Policy` header on all responses to mitigate Cross-Site Scripting (XSS) and data exfiltration in depth:
+
+- `default-src 'self';`
+- `script-src 'self';` (disallows inline scripts; blocks injected `<script>` tags and event handlers)
+- `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;` (allows Google Fonts and dynamic UI styling)
+- `font-src 'self' https://fonts.gstatic.com;`
+- `img-src 'self' data: https: http:;` (supports icons, data URI previews, and external markdown images)
+- `connect-src 'self';` (prevents exfiltration to third-party endpoints)
+- `object-src 'none';`
+- `base-uri 'self';` (allows `<base href="...">` routing while preventing base-tag hijacking)
+- `frame-ancestors 'none';` (guards against clickjacking)
+- `form-action 'none';`
+
+The pinned Mermaid browser runtime is fetched on demand at runtime and cached under the user cache directory (`~/.px0/cache/vendor/` or `$XDG_CACHE_HOME/px0/vendor/`). When a Markdown preview containing a Mermaid fence is rendered, the frontend requests `/static/vendor/mermaid-12.0.0.min.js`, which `server.go` serves same-origin from the local cache (downloading and caching from the pinned CDN release on first use if absent). This keeps the compiled executable lean while satisfying the strict same-origin `'self'` CSP, preventing exfiltration, and preserving full offline capability for subsequent sessions.
+
+### Binary Size Optimization & Packaging Footprint
+
+px0 employs several complementary strategies to maintain an ultra-lean binary footprint (~12 MB) without runtime packing or startup overhead:
+
+1. **Compile-time Trimming & Stripping**: Binaries are built with `-trimpath` and `-ldflags="-s -w"`, removing host filesystem paths, symbol tables, and DWARF debug sections.
+2. **Runtime Offloading of Heavy Vendor Assets**: Bulky third-party vendor assets (such as the 1.6 MB gzipped / 4 MB uncompressed Mermaid diagramming bundle) are excluded from `go:embed`. Instead, they are downloaded on-demand and cached in volatile/persistent user storage outside the repository, served via same-origin streaming handlers.
+3. **Frontend Bundle Minification**: Frontend assets (`web/app.js`) are bundled with `--minify` via Bun, reducing uncompressed client JavaScript from ~448 KB to ~250 KB.
+4. **Standard Executable Integrity**: Executables are distributed as native, unpacked binaries rather than using runtime packers (e.g., UPX), preventing antivirus false positives, ensuring compatibility across all platforms (macOS Gatekeeper, OpenBSD W^X, BSDs, Windows ARM64), and enabling the operating system to share read-only executable pages across multiple running processes.
 
 ### Self-Update Integrity
 

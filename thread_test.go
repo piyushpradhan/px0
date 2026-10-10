@@ -81,15 +81,15 @@ func TestThreadArgv(t *testing.T) {
 
 func TestThreadPrompt(t *testing.T) {
 	th := &thread{Path: "main.go", L1: 3, L2: 4, Snippet: "func main() {}"}
-	first := threadPrompt(th, nil, "why?", false)
+	first := threadPrompt(th, nil, "why?", false, "", false)
 	if !strings.Contains(first, "@main.go lines 3-4") || !strings.Contains(first, "func main() {}") || !strings.HasSuffix(first, "why?") {
 		t.Fatalf("first prompt = %q", first)
 	}
 	prior := []*threadTurn{{Prompt: "why?", Reply: "because", Changed: []string{"a.go"}}}
-	if got := threadPrompt(th, prior, "and now?", false); got != "and now?" {
+	if got := threadPrompt(th, prior, "and now?", false, "", false); got != "and now?" {
 		t.Fatalf("a live session should get the bare message, got %q", got)
 	}
-	replay := threadPrompt(th, prior, "and now?", true)
+	replay := threadPrompt(th, prior, "and now?", true, "", false)
 	for _, want := range []string{"@main.go", "User: why?", "Assistant: because", "a.go", "and now?"} {
 		if !strings.Contains(replay, want) {
 			t.Fatalf("replay prompt missing %q:\n%s", want, replay)
@@ -297,5 +297,108 @@ func TestInlineEditOverlapStillRefused(t *testing.T) {
 	// Let the cancelled turns finish saving before the temp dir goes away.
 	for _, sum := range s.threads.List() {
 		waitThreadIdle(t, s, sum.ID)
+	}
+}
+
+// In a PR review the harness is told what the thread is about: the whole PR
+// (merge-base to PR head), the reviewer's own changes, or just the selection.
+func TestThreadPromptCarriesPRScope(t *testing.T) {
+	root := t.TempDir()
+	th := &thread{Kind: "ask"}
+	s := &Server{ix: NewIndex(root), pr: &prSession{
+		target:   PRTarget{URL: "https://github.com/o/r/pull/7"},
+		meta:     PRMeta{Number: 7, Title: "Add thing", BaseRef: "main", HeadRef: "feat", HeadSHA: "abcdef1234567890"},
+		diffBase: "1234567890abcdef",
+	}}
+	defer s.pr.Close()
+
+	whole := s.prThreadContext("pr")
+	for _, want := range []string{"#7", "Add thing", "git diff 1234567890abcdef abcdef1234567890", "entire pull request"} {
+		if !strings.Contains(whole, want) {
+			t.Errorf("whole-PR context missing %q:\n%s", want, whole)
+		}
+	}
+	if s.prThreadContext("") != whole {
+		t.Error("an unset scope means the whole PR")
+	}
+	mine := s.prThreadContext("mine")
+	for _, want := range []string{"OWN changes", "git diff abcdef1234567890", "git log --stat abcdef1234567890..HEAD", "background only"} {
+		if !strings.Contains(mine, want) {
+			t.Errorf("mine context missing %q:\n%s", want, mine)
+		}
+	}
+	if strings.Contains(mine, "entire pull request") {
+		t.Error("mine scope must not tell the harness to review the whole PR")
+	}
+	sel := s.prThreadContext("selection")
+	if !strings.Contains(sel, "anchored") || strings.Contains(sel, "entire pull request") {
+		t.Errorf("selection context wrong:\n%s", sel)
+	}
+
+	first := threadPrompt(th, nil, "what do you think about the PR?", false, whole, false)
+	if !strings.Contains(first, "git diff 1234567890abcdef") || !strings.HasSuffix(first, "what do you think about the PR?") {
+		t.Errorf("first prompt should carry the PR context before the question:\n%s", first)
+	}
+	prior := []*threadTurn{{Prompt: "x", Reply: "y"}}
+	if got := threadPrompt(th, prior, "and now?", false, whole, false); got != "and now?" {
+		t.Errorf("follow-up turns stay bare when the scope is unchanged, got %q", got)
+	}
+	changed := threadPrompt(th, prior, "and now?", false, mine, true)
+	if !strings.Contains(changed, "changed what this conversation is about") || !strings.Contains(changed, "OWN changes") || !strings.HasSuffix(changed, "and now?") {
+		t.Errorf("a scope change should be announced with the new context:\n%s", changed)
+	}
+	if (&Server{}).prThreadContext("pr") != "" {
+		t.Error("no PR, no PR context")
+	}
+}
+
+func TestThreadDeleteAPI(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644)
+	h := writeHarness(t, `printf 'ok\n'`)
+	s := agentServer(t, root, h)
+
+	// Create thread 1 and delete via query parameter
+	code, m1 := agentPostJSON(t, s, "/api/threads/create", map[string]any{"path": "main.go", "l1": 1, "l2": 1, "message": "thread 1"})
+	if code != 200 {
+		t.Fatalf("create 1 = %d", code)
+	}
+	id1 := m1["id"].(string)
+	waitThreadIdle(t, s, id1)
+
+	code, delResp1 := agentPost(t, s, "/api/threads/delete?id="+id1)
+	if code != 200 || delResp1["deleted"] != true {
+		t.Fatalf("delete via query = %d, resp: %v", code, delResp1)
+	}
+	if s.threads.Get(id1) != nil {
+		t.Fatalf("thread 1 should be gone after delete")
+	}
+
+	// Create thread 2 and delete via JSON body
+	code, m2 := agentPostJSON(t, s, "/api/threads/create", map[string]any{"path": "main.go", "l1": 1, "l2": 1, "message": "thread 2"})
+	if code != 200 {
+		t.Fatalf("create 2 = %d", code)
+	}
+	id2 := m2["id"].(string)
+	waitThreadIdle(t, s, id2)
+
+	code, delResp2 := agentPostJSON(t, s, "/api/threads/delete", map[string]any{"id": id2})
+	if code != 200 || delResp2["deleted"] != true {
+		t.Fatalf("delete via json body = %d, resp: %v", code, delResp2)
+	}
+	if s.threads.Get(id2) != nil {
+		t.Fatalf("thread 2 should be gone after delete")
+	}
+
+	// Deleting nonexistent thread returns 200 with deleted: false
+	code, delResp3 := agentPostJSON(t, s, "/api/threads/delete", map[string]any{"id": "nonexistent"})
+	if code != 200 || delResp3["deleted"] != false {
+		t.Fatalf("delete nonexistent = %d, resp: %v", code, delResp3)
+	}
+
+	// Missing id returns 400
+	code, _ = agentPost(t, s, "/api/threads/delete")
+	if code != 400 {
+		t.Fatalf("delete without id = %d, want 400", code)
 	}
 }

@@ -1,5 +1,5 @@
 // web/src/renderer.js
-import { $, S, doc_, api, LH, CHUNK, OVERSCAN } from './state.js';
+import { $, S, doc_, api, esc, LH, CHUNK, OVERSCAN } from './state.js';
 import { vp, sizer, rowsEl, editor } from './ui.js';
 
 export function measure() {
@@ -86,7 +86,7 @@ export function paint() {
       if (gut.dels.has(n)) rc += ' gut-del';
     }
     html += '<div class="' + rc + '" data-l="' + n + '">' +
-      '<div class="' + gc + '"><span class="line-btn" role="button" data-l="' + n + '" title="Thread and line actions"></span>' + n + '</div><div class="c">' + (body === undefined ? '' : body) + '</div></div>';
+      '<div class="' + gc + '"><span class="line-btn" role="button" data-l="' + n + '" title="Thread and line actions">Edit</span>' + n + '</div><div class="c">' + (body === undefined ? '' : body) + '</div></div>';
   }
   const sel = saveSelection();
   rowsEl.style.transform = 'translateY(' + (first * LH) + 'px)';
@@ -215,7 +215,7 @@ export function decorate(first, last) {
     for (const row of rowsEl.children) {
       const n = +row.dataset.l;
       if (!byLine.has(n)) continue;
-      const marks = markNodes($('.c', row), S.find.q, S.find.ci, 'mark');
+      const marks = markNodes($('.c', row), S.find.q, S.find.cs, 'mark');
       if (act && act.line === n && marks[act.n]) marks[act.n].classList.add('on');
     }
   }

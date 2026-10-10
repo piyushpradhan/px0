@@ -4,10 +4,15 @@
 // side-by-side split layout (default) or a single-column unified layout.
 // Unlike the code viewport this is not virtualized -- a file's own diff is
 // bounded in size, so a plain DOM render is simple and fast enough.
-import { $, S, doc_, esc, api } from './state.js';
+import { $, S, doc_, esc, api, MOD } from './state.js';
 import { on } from './bus.js';
 import { syncPreview } from './markdown.js';
 import { setStatusNote, updateStatus } from './status.js';
+import { wordAtPoint } from './cursor.js';
+import { gotoDefinition } from './lsp.js';
+import { hoverAt } from './hover.js';
+import { pushHistory } from './history.js';
+import { COMMIT_STATUS, loadCommitFiles, cachedCommitFiles } from './commitfiles.js';
 
 export const diffview = $('#diffview');
 const diffContent = $('#diffcontent');
@@ -45,8 +50,12 @@ export function syncDiffView(force = false) {
     diffview.hidden = !want;
     if (want) drawDiff(want, force);
     else { diffContent.replaceChildren(); if (prSyncHandler) prSyncHandler(); }
-  } else if (want && want.diffHunks !== undefined) {
-    renderDiff(want);
+  } else if (want) {
+    /* Same doc still on screen. A caller that dropped the cached diff -- the
+       tab being pointed at a different commit, say -- leaves the view showing
+       the wrong revision, so that has to refetch rather than just repaint. */
+    if (want.diffText === undefined) drawDiff(want);
+    else if (want.diffHunks !== undefined) renderDiff(want);
   }
 }
 
@@ -84,9 +93,15 @@ export async function setDiffMode(mode) {
 async function drawDiff(d, force = false) {
   if (force || d.diffText === undefined) {
     diffContent.replaceChildren();
+    /* Which revision this fetch is for. Clicking through a commit's files, or
+       from a commit back to the tree, can leave an earlier request in flight;
+       without this its answer would land in a doc that has since been pointed
+       somewhere else and show the wrong commit's diff. */
+    const ref = d.diffRef || '';
     try {
-      d.diffReq = api('/api/diff', { path: d.path });
+      d.diffReq = api('/api/diff', { path: d.path, ref });
       const j = await d.diffReq;
+      if ((d.diffRef || '') !== ref) return;
       d.diffText = j.diff || '';
       d.diffHunks = j.hunks || parseDiff(d.diffText);
       // In a PR review session the server also splits the diff at the PR's
@@ -96,6 +111,7 @@ async function drawDiff(d, force = false) {
       d.prDiffHunks = j.prHunks !== undefined ? j.prHunks : (j.prDiff !== undefined ? parseDiff(j.prDiff) : undefined);
       d.yourDiffHunks = j.yourHunks !== undefined ? j.yourHunks : (j.yourDiff !== undefined ? parseDiff(j.yourDiff) : undefined);
     } catch (e) {
+      if ((d.diffRef || '') !== ref) return;
       d.diffText = '';
       d.diffHunks = [];
       d.prDiffHunks = undefined;
@@ -110,6 +126,20 @@ async function drawDiff(d, force = false) {
   if (d.diffScroll) {
     diffview.scrollTop = d.diffScroll;
     d.diffScroll = 0;
+  } else if (d.cur) {
+    scrollDiffToLine(d.cur);
+  }
+}
+
+export function scrollDiffToLine(line) {
+  if (!diffview || !line) return;
+  const row = diffview.querySelector(`[data-l="${line}"]`) ||
+              diffview.querySelector(`[data-at="${line}"]`) ||
+              diffview.querySelector(`[data-old-l="${line}"]`);
+  if (row) {
+    row.scrollIntoView({ block: 'center', behavior: 'auto' });
+    row.classList.add('diff-row-flash');
+    setTimeout(() => row.classList.remove('diff-row-flash'), 1200);
   }
 }
 
@@ -123,9 +153,39 @@ function appendHunks(frag, hunks, mode, reviewable) {
 function renderDiff(d) {
   diffContent.replaceChildren();
   const frag = document.createDocumentFragment();
+  if (d.diffRef) {
+    /* Pinned to one commit by the Unpushed sidebar section. Its line numbers
+       are that commit's, not the working tree's, so nothing here is a review
+       target (reviewable=false) -- see anchor() below. */
+    const hunks = d.diffHunks || [];
+    if (!hunks.length) {
+      const p = document.createElement('div');
+      p.className = 'diff-empty';
+      p.textContent = 'This commit made no change to ' + d.name + '.';
+      diffContent.append(p);
+      return;
+    }
+    frag.append(commitStrip(d));
+    frag.append(createDiffSection(d, 'commit', 'In commit ' + d.diffRef.slice(0, 7),
+      'this commit only, not the working tree', (bodyEl) => appendHunks(bodyEl, hunks, d.diffMode, false)));
+    diffContent.append(frag);
+    syncDiffAgentTargets();
+    if (prSyncHandler) prSyncHandler();
+    return;
+  }
   if (S.meta?.pr && d.prDiffHunks !== undefined) {
     const prHunks = d.prDiffHunks || [];
     const yourHunks = d.yourDiffHunks || [];
+    // Opened from the sidebar's "Yours" or "PR changes" scope: open the
+    // matching section and fold the other. Decided once per tab; after that
+    // the section's own header toggle wins.
+    const tree = $('#tree');
+    if (d.prCollapsed === undefined) {
+      d.prCollapsed = !!tree?.classList.contains('scope-yours') && yourHunks.length > 0;
+    }
+    if (d.yourCollapsed === undefined) {
+      d.yourCollapsed = !!tree?.classList.contains('scope-pr') && prHunks.length > 0;
+    }
     if (!prHunks.length && !yourHunks.length) {
       const p = document.createElement('div');
       p.className = 'diff-empty';
@@ -156,6 +216,19 @@ function renderDiff(d) {
   diffContent.append(frag);
   syncDiffAgentTargets();
   if (prSyncHandler) prSyncHandler();
+}
+
+/* Points a tab's diff at the section the sidebar scope is showing. A section
+   with nothing in it is left open: folding away the only content leaves an
+   empty pane. */
+export function focusDiffScope(d) {
+  const tree = $('#tree');
+  if (!d || !S.meta?.pr || !tree) return;
+  if (tree.classList.contains('scope-yours') && d.yourDiffHunks?.length !== 0) {
+    d.prCollapsed = true; d.yourCollapsed = false;
+  } else if (tree.classList.contains('scope-pr') && d.prDiffHunks?.length !== 0) {
+    d.prCollapsed = false; d.yourCollapsed = true;
+  }
 }
 
 function createDiffSection(d, kind, title, sub, populateBody) {
@@ -224,6 +297,44 @@ export function setPRSyncHandler(fn) { prSyncHandler = fn; }
    a given line, so it hands the line off to whatever tabs.js registered. */
 let sourceJumpHandler = null;
 export function setSourceJumpHandler(fn) { sourceJumpHandler = fn; }
+
+/* And for the commit strip's ‹ › buttons: tabs.js opens the file stepped to. */
+let commitStepHandler = null;
+export function setCommitStepHandler(fn) { commitStepHandler = fn; }
+
+// The nearest file from i in direction dir that can be opened: binary files
+// have no text diff and /api/file refuses them, so stepping passes over them.
+function commitStepTarget(files, i, dir) {
+  for (let k = i + dir; k >= 0 && k < files.length; k += dir) if (!files[k].binary) return k;
+  return -1;
+}
+
+/* Where a pinned tab's file sits in its commit, with ‹ › to step through the
+   rest. The file list is fetched on first need and filled in when it lands. */
+function commitStrip(d) {
+  const el = document.createElement('div');
+  el.className = 'diff-commit-strip';
+  const fill = files => {
+    const i = files.findIndex(f => f.path === d.path);
+    if (i < 0) { el.remove(); return; }
+    const f = files[i];
+    const g = COMMIT_STATUS[f.status] || ['git-M', f.status];
+    const path = f.from ? esc(f.from) + ' → ' + esc(f.path) : esc(f.path);
+    el.innerHTML =
+      '<span class="gs ' + g[0] + '" title="' + esc(g[1]) + '">' + esc(f.status) + '</span>' +
+      '<span class="dcs-path" title="' + path + '">' + path + '</span>' +
+      (f.binary ? '' : (f.add ? '<span class="up-file-add">+' + f.add + '</span>' : '') + (f.del ? '<span class="up-file-del">&minus;' + f.del + '</span>' : '')) +
+      '<span class="grow"></span>' +
+      '<span class="dcs-pos">' + (i + 1) + ' / ' + files.length + '</span>' +
+      '<button type="button" class="dcs-step" data-commit-step="-1" title="Previous file in this commit"' + (commitStepTarget(files, i, -1) < 0 ? ' disabled' : '') + '>‹</button>' +
+      '<button type="button" class="dcs-step" data-commit-step="1" title="Next file in this commit"' + (commitStepTarget(files, i, 1) < 0 ? ' disabled' : '') + '>›</button>';
+    el.dataset.i = i;
+  };
+  const have = cachedCommitFiles(d.diffRef);
+  if (have) fill(have);
+  else loadCommitFiles(d.diffRef).then(files => { if (el.isConnected || doc_() === d) fill(files); }, () => el.remove());
+  return el;
+}
 
 // The working-tree line number of whichever diff row currently sits at the
 // top of the scrolled viewport -- what "Source" should land on so switching
@@ -376,11 +487,14 @@ function lineCell(n, reviewable = true) {
   el.className = 'diff-ln';
   if (n !== '' && n !== undefined) {
     el.classList.add('diff-ln-nav');
-    el.title = 'Open in file view at line ' + n;
+    let title = 'Open in file view at line ' + n;
+    const d = doc_();
+    el.title = title;
     const btn = document.createElement('span');
     btn.className = 'line-btn';
     btn.setAttribute('role', 'button');
     btn.title = (S.meta?.pr && reviewable) ? 'Thread, review comment and line actions' : 'Thread and line actions';
+    btn.textContent = 'Edit';
     el.append(btn);
   }
   el.append(document.createTextNode(n === '' || n === undefined ? '' : String(n)));
@@ -424,18 +538,63 @@ export function initDiff() {
     if (line && sourceJumpHandler) sourceJumpHandler(line);
     else setDiffMode('source');
   });
+  diffContent.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    if (e.target.closest('.line-btn') || e.target.closest('.diff-ln-nav')) return;
+    const diffCode = e.target.closest('.diff-code');
+    if (!diffCode) return;
+    const w = wordAtPoint(e.clientX, e.clientY);
+    if (!w) return;
+    S.at = w;
+    S.lastWord = w.word;
+    const d = doc_();
+    if (e[MOD]) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (d) pushHistory(d.path, w.line);
+      // Plain click keeps the current mode; Alt flips it.
+      const inDiff = !!d.diffMode;
+      gotoDefinition(w, { view: (e.altKey ? !inDiff : inDiff) ? 'diff' : 'source' });
+      return;
+    }
+  });
+
   // Clicking a line number jumps straight to the full file at that line --
   // the diff shows what changed, but reading it usually means seeing it in
-  // context, not just the hunk.
+  // context, not just the hunk. Clicking a symbol highlights and opens hover actions.
   diffContent.addEventListener('click', e => {
+    const step = e.target.closest('[data-commit-step]');
+    if (step) {
+      const d = doc_();
+      const files = d && cachedCommitFiles(d.diffRef);
+      const next = files?.[commitStepTarget(files, +step.closest('.diff-commit-strip').dataset.i, +step.dataset.commitStep)];
+      if (!step.disabled && next && commitStepHandler) commitStepHandler(d, next);
+      return;
+    }
     if (e.target.closest('.line-btn')) return;
     const cell = e.target.closest('.diff-ln-nav');
-    if (!cell) return;
-    const rowEl = cell.closest('[data-l], [data-at]');
-    if (!rowEl || !sourceJumpHandler) return;
-    e.stopPropagation();
-    const line = rowEl.dataset.l !== undefined ? +rowEl.dataset.l : +rowEl.dataset.at;
-    sourceJumpHandler(line);
+    if (cell) {
+      const rowEl = cell.closest('[data-l], [data-at]');
+      if (!rowEl || !sourceJumpHandler) return;
+      e.stopPropagation();
+      const line = rowEl.dataset.l !== undefined ? +rowEl.dataset.l : +rowEl.dataset.at;
+      sourceJumpHandler(line);
+      return;
+    }
+    const diffCode = e.target.closest('.diff-code');
+    if (diffCode && !e[MOD]) {
+      const w = wordAtPoint(e.clientX, e.clientY);
+      if (w) {
+        S.at = w;
+        S.lastWord = w.word;
+        hoverAt(e.clientX, e.clientY);
+      }
+    }
+  });
+
+  diffContent.addEventListener('dblclick', e => {
+    const w = wordAtPoint(e.clientX, e.clientY);
+    if (w) { S.at = w; S.lastWord = w.word; }
   });
   $('#diff-btn')?.addEventListener('click', e => {
     e.stopPropagation();

@@ -4,25 +4,44 @@
 // line: start a thread, edit inline, copy a reference, and (in a PR review
 // session's diff view) add a review comment.
 import { S, doc_ } from './state.js';
-import { getReviewHandler, openLineMenu } from './selbar.js';
+import { getReviewHandler, openLineMenu, getSelectedRangeInfo } from './selbar.js';
+
+// The selection as it stood when the button was pressed: a press can collapse it
+// before the click lands, and the menu should act on what was selected.
+let pressedSel = null;
 
 export function initLineComment() {
+  document.addEventListener('mousedown', e => {
+    const btn = /** @type {HTMLElement|null} */ (e.target)?.closest?.('.line-btn');
+    pressedSel = btn ? getSelectedRangeInfo() : null;
+    if (btn) e.preventDefault(); // keep the selection alive
+  }, true);
   document.addEventListener('click', e => {
     const target = /** @type {HTMLElement|null} */ (e.target);
     const btn = target?.closest('.line-btn');
     if (!btn) return;
     e.preventDefault();
     e.stopPropagation();
-    handleLineBtnClick(btn);
+    const sel = pressedSel;
+    pressedSel = null;
+    handleLineBtnClick(btn, sel);
   });
 }
 
-function handleLineBtnClick(btn) {
+function handleLineBtnClick(btn, sel) {
   const d = doc_();
   if (!d) return;
 
   const diffRow = btn.closest('.diff-row, .diff-side');
   const at = btn.getBoundingClientRect();
+
+  // A selection covering the clicked line is what the menu acts on, so its
+  // actions carry the whole start-end range rather than just this line.
+  const clicked = +(btn.dataset.l || btn.closest('.row, .diff-row, .diff-side')?.dataset.l || 0);
+  if (sel && sel.path === d.path && (!clicked || (clicked >= sel.l1 && clicked <= sel.l2))) {
+    openLineMenu(sel, at.right + 4, at.top);
+    return;
+  }
 
   // On a line GitHub knows about in a PR review session the menu's review
   // action needs the diff side, so build the richer description for it. Rows
