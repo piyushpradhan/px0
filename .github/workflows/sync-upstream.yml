@@ -1,0 +1,131 @@
+name: Sync upstream
+
+# Fork-only. Merge px0-ai/px0 master into this fork's master.
+# Merge (never rebase) so master is never force-pushed and local clones just `git pull`.
+# On conflict, Codex resolves the merge; CI must pass before it lands on master.
+# Otherwise push upstream master to `sync/upstream` and open a PR for manual resolution.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge px0-ai/px0 master
+    if: github.repository != 'px0-ai/px0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+          # GITHUB_TOKEN cannot push commits that touch .github/workflows.
+          # SYNC_TOKEN: fine-grained PAT with Contents, Workflows and Pull requests
+          # read/write on this repo.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - id: merge
+        name: Merge upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch https://github.com/px0-ai/px0.git master:refs/remotes/upstream/master
+
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "Already up to date."
+            echo "result=current" >> "$GITHUB_OUTPUT"
+          elif git merge --no-edit upstream/master; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            # Leave the merge in progress for Codex.
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve conflicts with Codex
+        if: steps.merge.outputs.result == 'conflict'
+        timeout-minutes: 30
+        env:
+          # CODEX_AUTH_JSON: contents of ~/.codex/auth.json after `codex login` with ChatGPT.
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          MODEL: ${{ vars.SYNC_RESOLVE_MODEL || 'gpt-6-luna' }}
+          PROMPT: |
+            A `git merge upstream/master` is in progress in this repository and has conflicts.
+            HEAD is this fork's master (fork-only customizations); upstream/master is px0-ai/px0.
+            Run `git diff --name-only --diff-filter=U` to list conflicted files, then resolve every
+            conflict by keeping upstream's changes AND preserving the fork's intent. Read both sides
+            (`git log --oneline -5 HEAD -- <file>` and `git log --oneline -5 upstream/master -- <file>`)
+            before editing. Remove all conflict markers and `git add` each resolved file.
+            Do not commit, do not push, do not touch files that are not conflicted.
+        run: |
+          mkdir -p ~/.codex && printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          npx -y @openai/codex@latest exec --dangerously-bypass-approvals-and-sandbox \
+            -m "$MODEL" -c model_reasoning_effort=medium "$PROMPT"
+          if [ -n "$(git diff --name-only --diff-filter=U)" ] || git grep -qE '^(<<<<<<<|>>>>>>>) ' -- .; then
+            echo "::error::Conflicts remain after Codex."
+            exit 1
+          fi
+
+      - name: Setup Go
+        if: steps.merge.outputs.result == 'conflict'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Node.js
+        if: steps.merge.outputs.result == 'conflict'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Bundle web assets
+        if: steps.merge.outputs.result == 'conflict'
+        run: node ./scripts/build-web.js
+
+      - name: Build px0
+        if: steps.merge.outputs.result == 'conflict'
+        run: go build -trimpath -o px0 .
+
+      - name: Run tests
+        if: steps.merge.outputs.result == 'conflict'
+        run: go test -v ./...
+
+      - name: SDK end-to-end tests
+        if: steps.merge.outputs.result == 'conflict'
+        run: cd sdk && PX0_BIN=../px0 node --test test.ts
+
+      - name: Push master and run CI
+        if: steps.merge.outputs.result == 'clean' || steps.merge.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ steps.merge.outputs.result }}" = conflict ]; then
+            git commit --no-edit
+          fi
+          git push origin master
+          # Pushes made with GITHUB_TOKEN do not trigger push workflows.
+          gh workflow run ci.yml --ref master
+
+      - name: Open PR for manual resolution
+        if: failure() && steps.merge.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+        run: |
+          git push --force origin upstream/master:refs/heads/sync/upstream
+          if [ -z "$(gh pr list --head sync/upstream --state open --json number -q '.[].number')" ]; then
+            gh pr create --base master --head sync/upstream \
+              --title "chore: merge upstream px0-ai/px0" \
+              --body "Automatic upstream merge hit conflicts that Codex could not resolve. Resolve locally: \`git fetch upstream && git merge upstream/master\`, fix conflicts, push master. This PR closes itself once merged."
+          fi
+          echo "::warning::Upstream merge conflicted; see sync/upstream PR."
