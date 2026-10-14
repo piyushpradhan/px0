@@ -22,6 +22,35 @@ func gitInstalled() bool {
 	return err == nil
 }
 
+func TestGitStatusDoesNotWriteIndex(t *testing.T) {
+	root := gitRepo(t)
+	// A clean file with stale stat information makes ordinary git status
+	// refresh the index. Background reads must leave it alone so an explicit
+	// stage/commit does not lose a race for index.lock.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(root, "keep.go"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(gitDir(root), "index")
+	before, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statuses := gitStatus(root); statuses["sub/mod.go"] != "M" {
+		t.Fatalf("expected modified file, got %v", statuses)
+	}
+	if !gitHasUncommittedChanges(root) {
+		t.Fatal("expected uncommitted changes")
+	}
+	after, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("read-only git status refreshed the index")
+	}
+}
+
 // gitRepo builds a real repository under a fresh temp dir: keep/mod/del/ren are
 // committed, then the tree is dirtied (modify, stage-new, untrack, delete,
 // rename) so every status code is exercised. Returns the served root.

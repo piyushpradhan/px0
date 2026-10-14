@@ -30,6 +30,7 @@ This directory provides comprehensive documentation for all px0 user-facing feat
 | **Remote Workspaces** | CLI flags | Zero-config remote browsing over Tailscale, SSH-free operation | [Remote Workspaces](remote-workspaces.md) |
 | **Vim Keybindings** | Toggle in Settings | Modal normal, visual, and motion modes for keyboard navigation | [Vim Mode](vim-mode.md) |
 | **File Explorer** | `Cmd/Ctrl+B` | High-density tree, expand/collapse-all controls, compact folder chains, and tab management | [File Explorer](file-explorer.md) |
+| **TypeScript SDK** | HTTP API | Typed access to workspace reads, previews, commit review, LSP controls, agent edits and persistent threads, with editor parity checks and independent versions | [SDK Guide](../../sdk/README.md) |
 
 ---
 

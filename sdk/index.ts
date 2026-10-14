@@ -4,11 +4,15 @@
 // Paths are workspace-relative with forward slashes. Lines are 1-based; LSP
 // columns are 0-based UTF-16 offsets (JavaScript string indices).
 
+/** SDK package version; synchronized from package.json by `npm version`. */
+export const SDK_VERSION = "0.2.0";
+
 export type LspState = "off" | "starting" | "indexing" | "ready" | "failed";
 
 export interface LspBrief {
   state: LspState;
   server: string;
+  anyRunning: boolean;
   missing?: string; // language with no installed server
 }
 
@@ -30,11 +34,13 @@ export interface Meta {
   agent: string;
   agentModel: string;
   agentPinned: boolean;
+  agents: Harness[];
   pr?: PRMeta;
 }
 
 export interface Metrics {
   rssBytes: number;
+  peakRSSBytes: number;
   cpuUsage: number;
   goroutines: number;
   lspEnabled: boolean;
@@ -57,7 +63,7 @@ export interface TreeNode {
 export interface FuzzyResult {
   path: string;
   name: string;
-  pos: number[]; // matched byte offsets in path
+  pos: number[] | null; // matched byte offsets in path; null for an empty query
 }
 
 export interface FileChunk {
@@ -71,7 +77,9 @@ export interface FileChunk {
   exact: boolean;
   refine: boolean;
   markdown: boolean;
+  table: boolean;
   diffAvailable: boolean;
+  deleted?: boolean;
   lsp: LspBrief;
 }
 
@@ -81,12 +89,34 @@ export interface ImageFile {
   size: number;
 }
 
+export interface DiffRow {
+  type: "ctx" | "add" | "del";
+  oldLine?: number;
+  newLine?: number;
+  /** Working-tree line number for a deletion. */
+  at?: number;
+  text: string;
+  html?: string;
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  newStart: number;
+  section?: string;
+  rows: DiffRow[];
+}
+
 export interface Diff {
   path: string;
+  ref?: string;
   diff: string;
+  /** Highlighted rows used by the editor. null for diffs without text hunks (e.g. binary files). */
+  hunks: DiffHunk[] | null;
   available: boolean;
   prDiff?: string; // PR mode: merge-base..PR head
   yourDiff?: string; // PR mode: PR head..working tree
+  prHunks?: DiffHunk[] | null;
+  yourHunks?: DiffHunk[] | null;
 }
 
 export interface Gutter {
@@ -183,11 +213,80 @@ export interface LspInstallJob {
   log: string;
 }
 
+export interface LspServerStatus {
+  name: string;
+  lang: string;
+  fullLang: string;
+  exts: string[];
+  installed: boolean;
+  running: boolean;
+  state: "missing" | "stopped" | "installing" | "starting" | "indexing" | "ready" | "failed";
+  options: ({ index: number } & LspSetup["servers"][number]["options"][number])[] | null;
+  autoOpt: number;
+  job?: { running: boolean; cmd: string; error: string };
+  error?: string;
+  pid?: number;
+  memBytes?: number;
+}
+
+export interface LspServers {
+  enabled: boolean;
+  anyRunning: boolean;
+  servers: LspServerStatus[] | null;
+}
+
+export interface TableRow {
+  line: number;
+  cells: string[];
+}
+
+export interface TableResult {
+  header: string[];
+  headerLine: number;
+  rows: TableRow[];
+  cols: number;
+  truncated: boolean;
+}
+
 export interface GitCommit {
   hash: string;
+  full: string;
   subject: string;
   author: string;
   date: string;
+}
+
+export interface UnpushedCommit {
+  hash: string;
+  short: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+export interface CommitFile {
+  path: string;
+  status: string;
+  from?: string;
+  add: number;
+  del: number;
+  binary?: boolean;
+}
+
+export interface CommitDetail {
+  hash: string;
+  short: string;
+  subject: string;
+  message: string;
+  author: string;
+  email: string;
+  date: string;
+  dateIso: string;
+  files: number;
+  insertions: number;
+  deletions: number;
+  authorUrl?: string;
+  commitUrl?: string;
 }
 
 export interface GitStatus {
@@ -243,9 +342,75 @@ export interface AgentJob {
   changed: string[];
   ms: number;
   tracked: boolean;
+  /** Persisted conversation for this inline or batch edit; accepts threads.get/send/events. */
+  threadId?: string;
   batchCount?: number;
   items?: EditRequest[];
 }
+
+export interface ThreadTurn {
+  id: number;
+  prompt: string;
+  reply: string;
+  tools?: string[];
+  changed?: string[];
+  tracked: boolean;
+  error?: string;
+  running: boolean;
+  harness: string;
+  model?: string;
+  started: number; // Unix milliseconds
+  ms: number;
+}
+
+export type ThreadScope = "pr" | "mine" | "selection";
+
+export interface Thread {
+  id: string;
+  title: string;
+  kind?: "edit" | "batch";
+  path?: string;
+  l1?: number;
+  l2?: number;
+  snippet?: string;
+  scope?: ThreadScope;
+  scopeSent?: ThreadScope;
+  created: number; // Unix milliseconds
+  updated: number;
+  sessionId?: string;
+  sessionHarness?: string;
+  sessionLive?: boolean;
+  turns: ThreadTurn[];
+}
+
+export interface ThreadSummary {
+  id: string;
+  kind?: "edit" | "batch";
+  title: string;
+  path?: string;
+  l1?: number;
+  l2?: number;
+  updated: number;
+  turns: number;
+  running: boolean;
+  failed?: boolean;
+  touched?: boolean;
+}
+
+export interface ThreadRequest {
+  message: string;
+  scope?: ThreadScope;
+  path?: string;
+  l1?: number;
+  l2?: number;
+}
+
+export type ThreadEvent =
+  | { type: "thread"; data: Thread }
+  | { type: "delta" | "tool"; data: { turn: number; text: string } }
+  | { type: "list"; data: ThreadSummary[] }
+  | { type: "summary"; data: ThreadSummary }
+  | { type: "deleted"; data: { id: string } };
 
 export interface PRMeta {
   number: number;
@@ -286,17 +451,36 @@ export interface PRComment {
   url: string;
 }
 
+export interface SessionTab {
+  path: string;
+  ref?: string;
+}
+
 export interface Session {
-  tabs: { path: string }[];
+  tabs: SessionTab[];
   active: number;
   openDirs: string[];
   drafts?: DraftComment[];
 }
 
+export interface SettingSchemaItem {
+  key: string;
+  title: string;
+  description: string;
+  category: string;
+  type: "string" | "number" | "boolean" | "select" | "textarea";
+  default: unknown;
+  options?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+  secret?: boolean;
+}
+
 export interface Settings {
   settings: Record<string, unknown>;
   defaults?: Record<string, unknown>;
-  schema?: unknown;
+  schema?: SettingSchemaItem[];
   raw: string;
   path: string;
 }
@@ -304,7 +488,8 @@ export interface Settings {
 
 export type Px0Event =
   | { type: "metrics"; data: Metrics }
-  | { type: "git-status"; data: GitStatus };
+  | { type: "git-status"; data: GitStatus }
+  | { type: "ping"; data: Record<string, never> };
 
 /**
  * A request px0 answered with a non-2xx status, or (status 0) one that never
@@ -333,12 +518,15 @@ export interface LspOptions extends CallOptions {
   wait?: number;
 }
 
-export interface EventsOptions {
+export interface StreamOptions {
   signal?: AbortSignal;
-  /** Include the process metrics event (every 2.5s). Default true. */
-  metrics?: boolean;
   /** Reconnect with backoff when an established stream drops. Default true. */
   reconnect?: boolean;
+}
+
+export interface EventsOptions extends StreamOptions {
+  /** Include the process metrics event (every 2.5s). Default true. */
+  metrics?: boolean;
 }
 
 export interface Px0Options {
@@ -385,10 +573,14 @@ async function toError(res: Response, endpoint: string): Promise<Px0Error> {
 // Server-sent events parser. Scans each chunk once and carries only the
 // unterminated tail line between chunks, so cost stays linear in bytes
 // received however the transport splits them.
-async function* parseSSE(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<Px0Event> {
+async function* parseSSE<T>(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<T> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   const stop = () => void reader.cancel().catch(() => {});
+  if (signal?.aborted) {
+    await reader.cancel();
+    return;
+  }
   signal?.addEventListener("abort", stop, { once: true });
   let tail = "";
   let type = "";
@@ -406,7 +598,7 @@ async function* parseSSE(body: ReadableStream<Uint8Array>, signal?: AbortSignal)
         start = nl + 1;
         if (line.endsWith("\r")) line = line.slice(0, -1);
         if (line === "") {
-          if (data) yield { type: type || "message", data: JSON.parse(data) } as Px0Event;
+          if (data) yield { type: type || "message", data: JSON.parse(data) } as T;
           type = data = "";
         } else if (line.startsWith("data:")) {
           data += (data ? "\n" : "") + line.slice(line.charCodeAt(5) === 32 ? 6 : 5);
@@ -468,6 +660,7 @@ export class Px0 {
     body: unknown,
     o: CallOptions | undefined,
     parse: (res: Response) => Promise<T>,
+    headers?: Record<string, string>,
   ): Promise<T> {
     const user = o?.signal;
     user?.throwIfAborted();
@@ -491,7 +684,7 @@ export class Px0 {
       try {
         res = await this.f(url, {
           method,
-          headers: method === "POST" ? this.postHeaders : this.getHeaders,
+          headers: { ...(method === "POST" ? this.postHeaders : this.getHeaders), ...headers },
           body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
           signal: ac.signal,
         });
@@ -565,8 +758,8 @@ export class Px0 {
     (await this.get<{ results: FuzzyResult[] }>("find", { q, limit: o.limit }, o)).results;
 
   /** Highlighted window of a file: lines [start, start+count), count default 1000. Images return {image: true}. */
-  file = (path: string, o: CallOptions & { start?: number; count?: number } = {}) =>
-    this.get<FileChunk | ImageFile>("file", { path, start: o.start, count: o.count }, o);
+  file = (path: string, o: CallOptions & { start?: number; count?: number; ref?: string } = {}) =>
+    this.get<FileChunk | ImageFile>("file", { path, start: o.start, count: o.count, ref: o.ref }, o);
 
   /** Release server-side caches for a file opened with file(). */
   close = (path: string, o?: CallOptions) => this.get<{ ok: true; path: string }>("close", { path }, o);
@@ -579,8 +772,10 @@ export class Px0 {
 
   markdown = async (path: string, o?: CallOptions) =>
     (await this.get<{ html: string }>("markdown", { path }, o)).html;
-  diff = (path: string, o?: CallOptions) => this.get<Diff>("diff", { path }, o);
-  gutter = (path: string, o?: CallOptions) => this.get<Gutter>("gutter", { path }, o);
+  /** CSV/TSV preview, including source line numbers and the editor's row/byte limits. */
+  table = (path: string, o?: CallOptions) => this.get<TableResult>("table", { path }, o);
+  diff = (path: string, o: CallOptions & { ref?: string } = {}) => this.get<Diff>("diff", { path, ref: o.ref }, o);
+  gutter = (path: string, o: CallOptions & { ref?: string } = {}) => this.get<Gutter>("gutter", { path, ref: o.ref }, o);
 
   /** Workspace search. Aborting the call also stops the search on the server. */
   search = (q: string, o: SearchOptions & CallOptions = {}) =>
@@ -613,12 +808,16 @@ export class Px0 {
    */
   async *events(o: EventsOptions = {}): AsyncGenerator<Px0Event> {
     const path = o.metrics === false ? "git/stream" : "stream";
+    yield* this.stream<Px0Event>(path, undefined, o);
+  }
+
+  private async *stream<T>(path: string, query: Query | undefined, o: StreamOptions): AsyncGenerator<T> {
     const { signal } = o;
     for (let backoff = 250, first = true; ; first = false) {
       try {
-        const res = await this.call("GET", path, undefined, undefined, { signal }, async (r) => r);
+        const res = await this.call("GET", path, query, undefined, { signal }, async (r) => r, { Accept: "text/event-stream" });
         backoff = 250;
-        yield* parseSSE(res.body!, signal);
+        yield* parseSSE<T>(res.body!, signal);
       } catch (e) {
         if (signal?.aborted) return;
         const permanent = e instanceof Px0Error && e.status >= 400 && e.status < 500;
@@ -656,6 +855,12 @@ export class Px0 {
     install: (server: string, o: CallOptions & { option?: number } = {}) =>
       this.post<LspInstallJob>("lsp/install", { server, option: o.option ?? 0 }, undefined, o),
     start: (path: string, o?: CallOptions) => this.post<LspBrief>("lsp/start", { path }, undefined, o),
+    /** Runtime status for workspace language servers. */
+    servers: (o?: CallOptions) => this.get<LspServers>("lsp/servers", undefined, o),
+    /** Start an installed server by name, or all relevant installed servers with "all". */
+    startServer: (server: string, o?: CallOptions) => this.post<LspServers>("lsp/start", { server }, undefined, o),
+    /** Stop a named server; omit server to stop all. */
+    stop: (server?: string, o?: CallOptions) => this.post<LspServers>("lsp/stop", { server }, undefined, o),
   };
 
   // ---------------------------------------------------------------- git
@@ -664,6 +869,10 @@ export class Px0 {
     status: (o?: CallOptions) => this.get<GitStatus>("git/refresh", undefined, o),
     log: (o: CallOptions & { limit?: number } = {}) =>
       this.get<{ commits: GitCommit[]; commitsUrl: string }>("git/log", { limit: o.limit }, o),
+    unpushed: (o: CallOptions & { limit?: number } = {}) =>
+      this.get<{ available: boolean; upstream: string; commits: UnpushedCommit[] }>("unpushed", { limit: o.limit }, o),
+    commitFiles: (sha: string, o?: CallOptions) => this.get<{ sha: string; files: CommitFile[] }>("commitfiles", { sha }, o),
+    commitDetail: (sha: string, o?: CallOptions) => this.get<CommitDetail>("commitdetail", { sha }, o),
     stage: (path: string, o?: CallOptions) => this.post<{ ok: true }>("git/stage", undefined, { path }, o),
     unstage: (path: string, o?: CallOptions) => this.post<{ ok: true }>("git/unstage", undefined, { path }, o),
     commit: (message: string, o?: CallOptions) => this.post<{ ok: true }>("git/commit", undefined, { message }, o),
@@ -683,10 +892,13 @@ export class Px0 {
       this.post<Harnesses>("agent/select", { name, model: o.model }, undefined, o),
     /**
      * Dispatch the harness at line range(s). Ranges overlapping a running job
-     * are refused (409), as are dirty files unless force is set.
+     * are refused (409). Each dispatch is saved as a thread, including its reply.
+     * force is retained for compatibility; current px0 permits dirty files.
      */
     edit: (edits: EditRequest | EditRequest[], o: CallOptions & { force?: boolean } = {}) =>
-      this.post<AgentJob>("agent/batch", undefined, { edits: Array.isArray(edits) ? edits : [edits], force: !!o.force }, o),
+      Array.isArray(edits)
+        ? this.post<AgentJob>("agent/batch", undefined, { edits, force: !!o.force }, o)
+        : this.post<AgentJob>("agent/edit", { ...edits, force: o.force }, undefined, o),
     /** Job snapshot, or null if unknown; omit id for the most recent. */
     job: async (id?: number, o?: CallOptions) => {
       const j = await this.get<AgentJob | { idle: true }>("agent/job", { id }, o);
@@ -707,6 +919,34 @@ export class Px0 {
         await sleep(delay, o.signal);
       }
     },
+  };
+
+  // ---------------------------------------------------------------- threads
+
+  threads = {
+    list: async (o?: CallOptions) => (await this.get<{ threads: ThreadSummary[] }>("threads", undefined, o)).threads,
+    get: (id: string, o?: CallOptions) => this.get<Thread>("threads/get", { id }, o),
+    /** Creates a conversation and immediately starts its first turn. Anchors are optional. */
+    create: (request: ThreadRequest, o?: CallOptions) => this.post<Thread>("threads/create", undefined, request, o),
+    /** Continues a conversation. Rejects with 409 while its previous turn is running. */
+    send: (id: string, message: string, o?: CallOptions) => this.post<Thread>("threads/send", undefined, { id, message }, o),
+    /** Changes the review context sent with the next turn. */
+    scope: (id: string, scope: ThreadScope, o?: CallOptions) => this.post<Thread>("threads/scope", undefined, { id, scope }, o),
+    cancel: async (id: string, o?: CallOptions) =>
+      (await this.post<{ cancelled: boolean }>("threads/cancel", { id }, undefined, o)).cancelled,
+    delete: async (id: string, o?: CallOptions) =>
+      (await this.post<{ deleted: boolean }>("threads/delete", { id }, undefined, o)).deleted,
+    /** Resolve once the latest turn stops; check turns.at(-1)?.error. timeout bounds each poll. */
+    wait: async (id: string, o: CallOptions = {}): Promise<Thread> => {
+      for (let delay = 50; ; delay = Math.min(delay * 1.5, 500)) {
+        const thread = await this.threads.get(id, o);
+        if (!thread.turns.at(-1)?.running) return thread;
+        await sleep(delay, o.signal);
+      }
+    },
+    /** Without id, streams the list and summaries; with id, the transcript, deltas and tools. */
+    events: (o: StreamOptions & { id?: string } = {}): AsyncGenerator<ThreadEvent> =>
+      this.stream<ThreadEvent>("threads/stream", { id: o.id }, o),
   };
 
   // ---------------------------------------------------------------- pr (only when launched as `px0 <pr-url>`)

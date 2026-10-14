@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  pull_request:
   push:
     branches: [master]
   workflow_dispatch:
@@ -36,5 +37,28 @@ jobs:
       - name: Run tests
         run: go test -v ./...
 
-      - name: SDK end-to-end tests
-        run: cd sdk && PX0_BIN=../px0 node --test test.ts
+      - name: Install SDK development dependencies
+        run: npm ci --prefix sdk
+
+      - name: SDK types, API contracts and editor parity
+        working-directory: sdk
+        env:
+          PX0_BIN: ../px0
+        run: npm run check
+
+  sdk-package:
+    name: SDK package (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [18, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+        working-directory: sdk
+      - name: Verify installed tarball and declarations
+        run: npm run test:package
+        working-directory: sdk

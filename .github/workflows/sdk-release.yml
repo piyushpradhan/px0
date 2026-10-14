@@ -1,0 +1,42 @@
+name: SDK release
+
+on:
+  push:
+    tags: ['sdk-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+        working-directory: sdk
+      - name: Verify tag matches SDK version
+        working-directory: sdk
+        env:
+          SDK_TAG: ${{ github.ref_name }}
+        run: node --input-type=module -e 'import {readFileSync} from "node:fs"; const {version} = JSON.parse(readFileSync("package.json")); if (process.env.SDK_TAG !== `sdk-v${version}`) throw new Error("SDK tag and package version differ");'
+      - name: Test current editor and SDK together
+        run: npm run test:e2e
+        working-directory: sdk
+      - name: Verify package and TypeScript declarations
+        run: npm run test:package
+        working-directory: sdk
+      - name: Package SDK
+        run: npm pack
+        working-directory: sdk
+      - name: Create SDK release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SDK ${{ github.ref_name }}
+          generate_release_notes: true
+          files: sdk/*.tgz

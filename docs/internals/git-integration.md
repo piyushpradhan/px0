@@ -32,12 +32,14 @@ walk(ix.root, "", root)
 gs := <-gsCh
 ```
 
+Status reads use `git --no-optional-locks status`, including the uncommitted-change check before pulling. They report the same changes while leaving index refreshes to explicit git writes. This prevents the background watcher from taking `.git/index.lock` while the editor or SDK stages or commits. `TestGitStatusDoesNotWriteIndex` verifies that a status read does not rewrite stale index stat information.
+
 ### Git Command Specification
 
 px0 invokes:
 
 ```bash
-git status --porcelain=v2 -z
+git --no-optional-locks status --porcelain=v2 -z -uall
 ```
 
 - `--porcelain=v2`: Machine-readable format immune to user git config customizations.

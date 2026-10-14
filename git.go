@@ -100,7 +100,9 @@ func gitStatusAgainst(root, base string) map[string]string {
 	if !info.ok {
 		return nil
 	}
-	out, err := exec.Command("git", "-C", root, "status", "--porcelain=v2", "-z", "-uall").Output()
+	// Background status must not refresh the index and race explicit writes
+	// (stage/commit) for index.lock.
+	out, err := exec.Command("git", "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "-z", "-uall").Output()
 	if err != nil {
 		return nil
 	}
@@ -330,7 +332,7 @@ func gitHasUncommittedChanges(root string) bool {
 	if !gitAvailable(root) {
 		return false
 	}
-	out, err := exec.Command("git", "-C", root, "status", "--porcelain", "-uall").Output()
+	out, err := exec.Command("git", "--no-optional-locks", "-C", root, "status", "--porcelain", "-uall").Output()
 	if err != nil {
 		return false
 	}

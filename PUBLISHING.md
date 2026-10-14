@@ -2,6 +2,8 @@
 
 This document outlines the step-by-step instructions for preparing, testing, and publishing a new release of `px0`.
 
+The TypeScript SDK is versioned independently. Its release instructions and compatibility policy are in [`sdk/README.md`](sdk/README.md#versioning-and-releases), with history in [`sdk/CHANGELOG.md`](sdk/CHANGELOG.md). SDK tags use `sdk-v<version>` and trigger `.github/workflows/sdk-release.yml`; binary releases continue using `v<version>`. Before an SDK release, run `npm ci`, `npm run test:e2e`, and `npm run test:package` inside `sdk/`.
+
 ## 1. Prerequisites
 
 Before cutting a new release, ensure you have:

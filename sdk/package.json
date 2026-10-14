@@ -1,6 +1,6 @@
 {
   "name": "@px0/sdk",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Typed client for the px0 code viewer's HTTP API",
   "license": "MIT",
   "type": "module",
@@ -12,13 +12,32 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "index.ts"],
+  "files": [
+    "dist",
+    "index.ts",
+    "CHANGELOG.md"
+  ],
   "sideEffects": false,
-  "engines": { "node": ">=18" },
-  "scripts": {
-    "build": "tsc",
-    "test": "node --test test.ts",
-    "prepublishOnly": "tsc && node --test test.ts"
+  "engines": {
+    "node": ">=18"
   },
-  "repository": { "type": "git", "url": "git+https://github.com/px0-ai/px0.git", "directory": "sdk" }
+  "scripts": {
+    "prebuild": "node scripts/version.mjs --check",
+    "build": "tsc",
+    "test": "node --test test.ts contract.test.ts parity.test.ts",
+    "test:e2e": "node scripts/test-e2e.mjs",
+    "test:package": "npm run build && node scripts/test-package.mjs",
+    "check": "npm run build && npm test",
+    "version": "node scripts/version.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run test:e2e && npm run test:package"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/px0-ai/px0.git",
+    "directory": "sdk"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
 }

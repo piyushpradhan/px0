@@ -2,11 +2,10 @@
 //   PX0_BIN=../px0 node --test test.ts
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Px0, Px0Error, type Px0Event } from "./index.ts";
+import { Px0, Px0Error } from "./index.ts";
+import { bin, editorFixture } from "./test-server.ts";
 
 // ---------------------------------------------------------------- fakes
 
@@ -41,8 +40,8 @@ function sseBody(chunks: string[], o: { end?: boolean; onCancel?: () => void } =
 const hang = (c: Call) =>
   new Promise<Response>((_, reject) => c.init.signal!.addEventListener("abort", () => reject(c.init.signal!.reason)));
 
-async function take(it: AsyncIterable<Px0Event>, n: number) {
-  const out: Px0Event[] = [];
+async function take<T>(it: AsyncIterable<T>, n: number) {
+  const out: T[] = [];
   for await (const ev of it) {
     out.push(ev);
     if (out.length === n) break;
@@ -112,6 +111,21 @@ describe("unit", () => {
     const f = fakeFetch(() => sseBody(["event: git-status\ndata: {}\n\n"]));
     await take(new Px0({ fetch: f }).events({ metrics: false }), 1);
     assert.match(f.calls[0].url, /\/api\/git\/stream$/);
+  });
+
+  test("thread streams reconnect to snapshots with the same id and SSE headers", async () => {
+    let cancelled = false;
+    const f = fakeFetch((_, n) => sseBody([
+      `event: thread\ndata: {"id":"t & é","turns":[{"reply":"reply ${n}"}]}\n\n`,
+    ], { end: n === 1, onCancel: () => void (cancelled = true) }));
+    const events = await take(new Px0({ fetch: f, url: "https://example.test/review/", compress: true }).threads.events({ id: "t & é" }), 2);
+    assert.deepEqual(events.map((event) => event.type === "thread" && event.data.turns[0].reply), ["reply 1", "reply 2"]);
+    for (const call of f.calls) {
+      assert.equal(new URL(call.url).pathname, "/review/api/threads/stream");
+      assert.equal(new URL(call.url).searchParams.get("id"), "t & é");
+      assert.equal(new Headers(call.init.headers).get("Accept"), "text/event-stream");
+    }
+    assert.equal(cancelled, true);
   });
 
   test("timeouts reject with TimeoutError", async () => {
@@ -197,40 +211,22 @@ describe("unit", () => {
 
 // ---------------------------------------------------------------- e2e
 
-const bin = process.env.PX0_BIN ?? new URL("../px0", import.meta.url).pathname;
-
-describe("e2e", { skip: !existsSync(bin) && `no px0 binary at ${bin} (set PX0_BIN)` }, () => {
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  const root = mkdtempSync(join(tmpdir(), "px0-sdk-"));
-  const px0 = new Px0({ url: `http://127.0.0.1:${port}/` });
-  let proc: ChildProcess;
+describe("e2e", { skip: !bin && "run npm run test:e2e or set PX0_BIN", timeout: 30_000 }, () => {
+  let fixture: ReturnType<typeof editorFixture>;
+  let root: string;
+  let px0: Px0;
 
   before(async () => {
+    fixture = editorFixture();
+    root = fixture.root;
     writeFileSync(join(root, "a.js"), "function hello() {\n  return 1;\n}\n");
-    const git = (...a: string[]) => execFileSync("git", ["-C", root, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
-    git("init", "-q");
+    const { git } = fixture;
     git("add", ".");
     git("commit", "-qm", "init");
-    // Stand-in harness: appends a line to a.js wherever it was asked to edit.
-    const harness = join(root, "..", `fake-harness-${port}.sh`);
-    writeFileSync(harness, "#!/bin/sh\necho '// edited' >> a.js\n");
-    chmodSync(harness, 0o755);
-    proc = spawn(bin, ["-port", String(port), "-no-open", "-no-lsp", "-no-telemetry", "-quiet", "-agent", `${harness} {prompt}`, root], {
-      // Keep settings/session writes out of the real home.
-      env: {
-        ...process.env,
-        HOME: mkdtempSync(join(tmpdir(), "px0-home-")),
-        GIT_AUTHOR_NAME: "t",
-        GIT_AUTHOR_EMAIL: "t@t",
-        GIT_COMMITTER_NAME: "t",
-        GIT_COMMITTER_EMAIL: "t@t",
-      },
-      stdio: "ignore",
-    });
-    await px0.ready({ timeout: 10_000 });
+    px0 = await fixture.start();
   });
 
-  after(() => proc?.kill());
+  after(async () => fixture?.dispose());
 
   test("reads", async () => {
     assert.equal((await px0.meta()).git, true);
@@ -249,8 +245,8 @@ describe("e2e", { skip: !existsSync(bin) && `no px0 binary at ${bin} (set PX0_BI
   });
 
   test("agent edit, wait, then git sees it", async () => {
-    const job = await px0.agent.edit({ path: "a.js", l1: 1, l2: 3, instruction: "add a comment" });
-    const done = await px0.agent.wait(job.id);
+    const job = await px0.agent.edit({ path: "a.js", l1: 1, l2: 3, instruction: "sdk:edit add a comment" });
+    const done = await px0.agent.wait(job.id, { signal: AbortSignal.timeout(10_000) });
     assert.equal(done.error ?? "", "");
     assert.match(readFileSync(join(root, "a.js"), "utf8"), /edited/);
     assert.equal((await px0.diff("a.js")).available, true);
@@ -262,10 +258,11 @@ describe("e2e", { skip: !existsSync(bin) && `no px0 binary at ${bin} (set PX0_BI
 
   test("events stream", async () => {
     const seen = new Set<string>();
-    for await (const ev of px0.events()) {
+    for await (const ev of px0.events({ signal: AbortSignal.timeout(5_000) })) {
       seen.add(ev.type);
       if (seen.has("metrics") && seen.has("git-status")) break;
     }
+    assert.deepEqual([...seen].sort(), ["git-status", "metrics"]);
     const [git] = await take(px0.events({ metrics: false }), 1);
     assert.equal(git.type, "git-status");
   });

@@ -64,6 +64,8 @@ The explorer expands folders through `/api/tree` on demand. Expand All skips ign
 
 The server is implemented in [`server.go`](../../server.go) using Go's standard `http.ServeMux`. Every request passes through a centralized `ServeHTTP` wrapper that records activity timestamps, tracks status codes and durations, applies pooled Gzip compression when accepted by the client (excluding SSE streams), and logs every HTTP request to the terminal when the `-verbose` flag is active.
 
+The [TypeScript SDK](../../sdk/README.md) wraps every registered API, with tests that detect route and JSON field drift and compare responses against a running editor. Background git status reads disable optional index locking so they cannot contend with explicit stage/commit actions from either client.
+
 ### Base Path & Subpath Prefixing
 When hosted behind reverse proxies or multi-tenant review platforms, px0 supports custom URL prefixes via the `-base-path` CLI flag or `server.basePath` in settings (e.g. `/rev-123/`):
 - All routes below are prefixed with the base path (`/<base-path>/api/...`, `/<base-path>/static/...`).
