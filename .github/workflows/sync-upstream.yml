@@ -2,7 +2,7 @@ name: Sync upstream
 
 # Fork-only. Merge px0-ai/px0 master into this fork's master.
 # Merge (never rebase) so master is never force-pushed and local clones just `git pull`.
-# On conflict, Codex resolves the merge; CI must pass before it lands on master.
+# On conflict, Codex resolves the merge and repairs failed checks before landing on master.
 # Otherwise push upstream master to `sync/upstream` and open a PR for manual resolution.
 
 on:
@@ -24,7 +24,7 @@ jobs:
     name: Merge px0-ai/px0 master
     if: github.repository != 'px0-ai/px0'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
         with:
@@ -34,6 +34,9 @@ jobs:
           # SYNC_TOKEN: fine-grained PAT with Contents, Workflows and Pull requests
           # read/write on this repo.
           token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Test upstream check recovery
+        run: python3 .github/scripts/repair-upstream.test.py
 
       - id: merge
         name: Merge upstream
@@ -89,21 +92,44 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Bundle web assets
+      - id: checks
+        name: Check resolved merge
         if: steps.merge.outputs.result == 'conflict'
-        run: node ./scripts/build-web.js
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/check-upstream.sh 2>&1 | tee "$RUNNER_TEMP/sync-upstream-checks.log"
 
-      - name: Build px0
-        if: steps.merge.outputs.result == 'conflict'
-        run: go build -trimpath -o px0 .
+      - name: Fix failed checks with Codex
+        if: steps.checks.outcome == 'failure'
+        timeout-minutes: 60
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          MODEL: ${{ vars.SYNC_REPAIR_MODEL || 'gpt-6.1-sol' }}
+          PROMPT: |
+            A `git merge upstream/master` is in progress. Conflicts have been resolved, but
+            `bash .github/scripts/check-upstream.sh` failed. Read the diagnostics in
+            $RUNNER_TEMP/sync-upstream-checks.log (expand RUNNER_TEMP from the environment).
+            HEAD is this fork's master; upstream/master is px0-ai/px0.
+            Fix the build, test, or SDK type errors while preserving upstream changes AND
+            the fork's intent. You may edit files beyond the originally conflicted files
+            when needed to fix integration errors. Keep changes focused; do not disable
+            checks, weaken types, or remove functionality to make the checks pass.
+            Run `bash .github/scripts/check-upstream.sh` and iterate until it succeeds.
+            Stage all repaired files with `git add`.
+            Do not commit, push, abort the merge, or change workflow files or check scripts.
+        run: |
+          mkdir -p ~/.codex && printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          bash .github/scripts/repair-upstream.sh
 
-      - name: Run tests
-        if: steps.merge.outputs.result == 'conflict'
-        run: go test -v ./...
-
-      - name: SDK end-to-end tests
-        if: steps.merge.outputs.result == 'conflict'
-        run: cd sdk && PX0_BIN=../px0 node --test test.ts
+      - name: Verify repaired resolution
+        if: steps.checks.outcome == 'failure'
+        run: |
+          if [ -n "$(git diff --name-only --diff-filter=U)" ] || git grep -qE '^(<<<<<<<|>>>>>>>) ' -- .; then
+            echo "::error::Conflicts remain after check repair."
+            exit 1
+          fi
+          bash .github/scripts/check-upstream.sh
+          git add -u
 
       - name: Push master and run CI
         if: steps.merge.outputs.result == 'clean' || steps.merge.outputs.result == 'conflict'
@@ -126,6 +152,6 @@ jobs:
           if [ -z "$(gh pr list --head sync/upstream --state open --json number -q '.[].number')" ]; then
             gh pr create --base master --head sync/upstream \
               --title "chore: merge upstream px0-ai/px0" \
-              --body "Automatic upstream merge hit conflicts that Codex could not resolve. Resolve locally: \`git fetch upstream && git merge upstream/master\`, fix conflicts, push master. This PR closes itself once merged."
+              --body "Automatic upstream merge failed during conflict resolution, check repair, or publishing. Resolve locally: \`git fetch upstream && git merge upstream/master\`, fix conflicts and failing checks, push master. This PR closes itself once merged."
           fi
           echo "::warning::Upstream merge conflicted; see sync/upstream PR."
