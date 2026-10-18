@@ -26,7 +26,7 @@ for await (const ev of px0.events({ metrics: false })) {
 
 | Area | Methods |
 | --- | --- |
-| Workspace | `meta` `ready` `metrics` `tree` `find` `file` `close` `raw` `text` `markdown` `table` `diff` `gutter` `search` `outline` `def` `reindex` `events` |
+| Workspace | `meta` `ready` `metrics` `tree` `find` `file` `saveFile` `createFile` `createDirectory` `close` `raw` `text` `markdown` `table` `diff` `gutter` `search` `outline` `def` `reindex` `events` |
 | Settings / session | `settings` `updateSettings` `session` `updateSession` |
 | `lsp` | `definition` `references` `hover` `symbols` `calls` `expandCalls` `warm` `setup` `install` `start` `servers` `startServer` `stop` |
 | `git` | `status` `log` `unpushed` `commitFiles` `commitDetail` `stage` `unstage` `commit` `pull` `push` `commitMessage` |
@@ -37,6 +37,8 @@ for await (const ev of px0.events({ metrics: false })) {
 Request payloads (`agent.edit`, `threads.create`, settings/session updates) are objects; other required arguments are positional. Optional call settings go in a trailing object accepting `signal` and `timeout`. Streams accept `signal` and `reconnect`. For a raw response: `px0.request(method, path, { query, body })`.
 
 Paths are workspace-relative. Lines are 1-based; LSP columns are 0-based UTF-16 offsets.
+
+`saveFile(path, content)` writes UTF-8 text, overwriting an existing file or creating it with any missing parent directories. It returns `{ok, path, size}`, where `size` is bytes. `createFile(path)` creates an empty file; `createDirectory(path)` creates a directory. Both create missing parents, return `{ok, path, type}`, and reject with 409 if the target exists. All three accept trailing call options.
 
 ## Threads and edit follow-ups
 

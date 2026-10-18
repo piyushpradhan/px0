@@ -37,6 +37,9 @@ try {
       const scoped: Thread = await client.threads.scope(thread.id, "mine");
       const diff: Diff = await client.diff("a.js", { ref: "abcd" });
       const detail: CommitDetail = await client.git.commitDetail("abcd");
+      const saved: { ok: true; path: string; size: number } = await client.saveFile("notes.txt", "é\\n", { timeout: 5000 });
+      const file: { ok: true; path: string; type: "file" } = await client.createFile("new.txt");
+      const dir: { ok: true; path: string; type: "dir" } = await client.createDirectory("new-dir");
       for await (const event of client.threads.events({ id: thread.id })) {
         const typed: ThreadEvent = event;
         if (typed.type === "thread") console.log(typed.data.turns[0].reply);
@@ -44,7 +47,7 @@ try {
       await client.updateSession({ tabs: [{ path: "a.js", ref: "abcd" }] });
       await client.lsp.startServer("all");
       await client.lsp.stop("gopls");
-      console.log(version, table.cols, scoped.scope, diff.hunks?.[0].rows[0].html, detail.message);
+      console.log(version, table.cols, scoped.scope, diff.hunks?.[0].rows[0].html, detail.message, saved.size, file.type, dir.type);
     }
   `);
   execFileSync(process.execPath, [join(sdk, "node_modules/typescript/bin/tsc"), "--strict", "--noEmit", "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext", "consumer.mts"], { cwd: temp, stdio: "inherit" });

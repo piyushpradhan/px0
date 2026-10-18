@@ -1,6 +1,6 @@
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, readFileSync, rmSync } from "node:fs";
+import { writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { Px0, Px0Error, type ThreadEvent } from "./index.ts";
@@ -240,6 +240,49 @@ describe("editor parity", { skip: !bin && "run npm run test:e2e or set PX0_BIN",
     assert.equal((await px0.settings()).settings["editor.vimMode"], false);
     assertShape(await px0.lsp.servers(), "LspServers");
     await assert.rejects(px0.pr.meta(), status(404));
+  });
+});
+
+describe("file writes", { skip: !bin && "run npm run test:e2e or set PX0_BIN", timeout: 30_000 }, () => {
+  let f: ReturnType<typeof editorFixture>;
+  let px0: Px0;
+  const path = "draft & é.txt";
+  before(async () => {
+    f = editorFixture();
+    writeFileSync(join(f.root, path), "old\n");
+    f.git("add", "."); f.git("commit", "-qm", "file write fixture");
+    px0 = await f.start({ basePath: "/file-writes/", agent: false });
+  });
+  after(async () => f?.dispose());
+
+  test("saving persists UTF-8 content, refreshes cached reads and creates missing parents", async () => {
+    await px0.file(path);
+    const content = "é 🐙\nupdated\n";
+    const size = Buffer.byteLength(content);
+    assert.deepEqual(await px0.saveFile(path, content), { ok: true, path, size });
+    assert.equal(readFileSync(join(f.root, path), "utf8"), content);
+    assert.equal(await px0.text(path), content);
+    assert.equal((await px0.file(path)).size, size);
+    const nested = "missing parents/empty.txt";
+    assert.deepEqual(await px0.saveFile(nested, ""), { ok: true, path: nested, size: 0 });
+    assert.equal(readFileSync(join(f.root, nested), "utf8"), "");
+    await assert.rejects(px0.saveFile("../escape.txt", "bad"), status(400));
+    await assert.rejects(px0.saveFile("missing parents", "bad"), status(400));
+  });
+
+  test("creating files and directories preserves types, rejects duplicates and stays inside the workspace", async () => {
+    const dir = "new & é/nested";
+    assert.deepEqual(await px0.createDirectory(dir), { ok: true, path: dir, type: "dir" });
+    assert.ok(statSync(join(f.root, dir)).isDirectory());
+    const file = "other parents/new & é.txt";
+    assert.deepEqual(await px0.createFile(file), { ok: true, path: file, type: "file" });
+    assert.ok(statSync(join(f.root, file)).isFile());
+    assert.equal(readFileSync(join(f.root, file), "utf8"), "");
+    assert.ok((await px0.tree("other parents")).some((entry) => entry.path === file));
+    await assert.rejects(px0.createFile(file), status(409));
+    await assert.rejects(px0.createDirectory(dir), status(409));
+    await assert.rejects(px0.createFile("../escape.txt"), status(400));
+    await assert.rejects(px0.createDirectory("../escape"), status(400));
   });
 });
 

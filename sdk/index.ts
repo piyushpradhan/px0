@@ -761,6 +761,18 @@ export class Px0 {
   file = (path: string, o: CallOptions & { start?: number; count?: number; ref?: string } = {}) =>
     this.get<FileChunk | ImageFile>("file", { path, start: o.start, count: o.count, ref: o.ref }, o);
 
+  /** Write UTF-8 content, replacing an existing file or creating it and its parents. size is bytes. */
+  saveFile = (path: string, content: string, o?: CallOptions) =>
+    this.post<{ ok: true; path: string; size: number }>("file/save", undefined, { path, content }, o);
+
+  /** Create an empty file and any missing parents. Rejects with 409 if the path exists. */
+  createFile = (path: string, o?: CallOptions) =>
+    this.post<{ ok: true; path: string; type: "file" }>("fs/new", undefined, { path, type: "file" }, o);
+
+  /** Create a directory and any missing parents. Rejects with 409 if the path exists. */
+  createDirectory = (path: string, o?: CallOptions) =>
+    this.post<{ ok: true; path: string; type: "dir" }>("fs/new", undefined, { path, type: "dir" }, o);
+
   /** Release server-side caches for a file opened with file(). */
   close = (path: string, o?: CallOptions) => this.get<{ ok: true; path: string }>("close", { path }, o);
 

@@ -2,6 +2,11 @@
 
 SDK versions are independent of px0 binary versions. Release tags use `sdk-v<version>`.
 
+## Unreleased
+
+- Add typed `saveFile`, `createFile`, and `createDirectory` methods for the editor's file-writing APIs.
+- Cover file writes with request contracts, real-editor integration tests, and installed-package declaration checks.
+
 ## 0.2.0
 
 - Expose persistent threads: create, list, read, send, wait, scope, cancel, delete, and live transcript/list events.

@@ -43,10 +43,13 @@ test("every registered editor API has a callable SDK wrapper", async () => {
   } });
   const edit = { path: "a b.js", l1: 1, l2: 2, instruction: "explain & fix" };
   const oneEvent = async (events: AsyncIterable<unknown>) => { for await (const _ of events) break; };
-  const cases: [string, string, () => unknown][] = [
+  const cases: [string, string, () => unknown, unknown?][] = [
     ["GET", "meta", () => px0.meta()], ["GET", "meta", () => px0.ready()],
     ["GET", "metrics", () => px0.metrics()], ["GET", "tree", () => px0.tree("src")],
     ["GET", "find", () => px0.find("ab", { limit: 5 })], ["GET", "file", () => px0.file(edit.path, { start: 1, count: 2, ref: "HEAD" })],
+    ["POST", "file/save", () => px0.saveFile(edit.path, "é\n"), { path: edit.path, content: "é\n" }],
+    ["POST", "fs/new", () => px0.createFile(edit.path), { path: edit.path, type: "file" }],
+    ["POST", "fs/new", () => px0.createDirectory("new dir & é"), { path: "new dir & é", type: "dir" }],
     ["GET", "close", () => px0.close(edit.path)], ["GET", "raw", () => px0.raw(edit.path)], ["GET", "raw", () => px0.text(edit.path)],
     ["GET", "markdown", () => px0.markdown("README.md")], ["GET", "table", () => px0.table("a.csv")],
     ["GET", "diff", () => px0.diff(edit.path, { ref: "HEAD" })], ["GET", "gutter", () => px0.gutter(edit.path, { ref: "HEAD" })],
@@ -83,12 +86,13 @@ test("every registered editor API has a callable SDK wrapper", async () => {
     ["POST", "pr/launch", () => px0.pr.launch("https://github.com/owner/repo/pull/1")],
   ];
   const covered = new Set<string>();
-  for (const [method, path, invoke] of cases) {
+  for (const [method, path, invoke, body] of cases) {
     calls = [];
     await invoke();
     assert.equal(calls.length, 1, `${method} ${path}: should make one request`);
     assert.equal(calls[0].url.pathname, `/review/api/${path}`);
     assert.equal(calls[0].init.method, method);
+    if (body !== undefined) assert.deepEqual(JSON.parse(String(calls[0].init.body)), body);
     if (["file", "diff", "gutter"].includes(path)) assert.equal(calls[0].url.searchParams.get("ref"), "HEAD");
     if (method === "POST") assert.equal(new Headers(calls[0].init.headers).get("Origin"), "http://localhost:7777");
     if (path.includes("stream")) assert.equal(new Headers(calls[0].init.headers).get("Accept"), "text/event-stream");
