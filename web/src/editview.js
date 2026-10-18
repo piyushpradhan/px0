@@ -4,6 +4,7 @@ import { vp, showToast, flashActionSuccess } from './ui.js';
 import { drawTabs, loadGutter, reloadOpenTabs } from './tabs.js';
 import { syncPreview } from './markdown.js';
 import { syncDiffView } from './diff.js';
+import { triggerRefresh } from './gitstream.js';
 
 export const editViewEl = $('#editview');
 export const editGutterEl = $('#editview-gutter');
@@ -13,17 +14,65 @@ export const btnEditMode = $('#btn-edit-mode');
 export const btnSaveFile = $('#btn-save-file');
 export const btnCancelEdit = $('#btn-cancel-edit');
 
+let mirror = null;
+
 export function updateGutter() {
   if (!editTextarea || !editGutterEl) return;
   const text = editTextarea.value;
-  const lineCount = (text.match(/\n/g) || []).length + 1;
+  const lines = text.split('\n');
+  const lineCount = lines.length;
   const digits = String(lineCount).length;
   editGutterEl.style.width = Math.max(45, digits * (S.chW || 7.8) + 26) + 'px';
-  let s = '';
-  for (let i = 1; i <= lineCount; i++) {
-    s += i + '\n';
+  if (!S.wrap) {
+    let s = '';
+    for (let i = 1; i <= lineCount; i++) s += i + '\n';
+    editGutterEl.textContent = s;
+    return;
   }
-  editGutterEl.textContent = s;
+  // Wrapped lines span several visual rows: measure each in a hidden mirror
+  // laid out like the textarea and size the matching gutter number to it.
+  if (!mirror) {
+    mirror = document.createElement('div');
+    mirror.id = 'editview-mirror';
+    mirror.setAttribute('aria-hidden', 'true');
+    editTextarea.parentElement.appendChild(mirror);
+  }
+  mirror.style.width = editTextarea.clientWidth + 'px';
+  mirror.textContent = '';
+  const frag = document.createDocumentFragment();
+  for (const l of lines) {
+    const row = document.createElement('div');
+    row.textContent = l || ' ';
+    frag.appendChild(row);
+  }
+  mirror.appendChild(frag);
+  const rows = mirror.children;
+  const heights = new Array(lineCount);
+  for (let i = 0; i < lineCount; i++) heights[i] = rows[i].offsetHeight;
+  mirror.textContent = '';
+  const out = document.createDocumentFragment();
+  for (let i = 0; i < lineCount; i++) {
+    const n = document.createElement('div');
+    n.textContent = i + 1;
+    n.style.height = heights[i] + 'px';
+    out.appendChild(n);
+  }
+  editGutterEl.textContent = '';
+  editGutterEl.appendChild(out);
+}
+
+// The doc whose text is currently in the textarea; lets any tab switch path
+// (openFile, switchTab, closeTab) swap the content without each repeating it.
+let loadedDoc = null;
+
+function loadEditContent(d) {
+  if (loadedDoc === d) return;
+  if (loadedDoc && loadedDoc.isEditing) loadedDoc.editContent = editTextarea.value;
+  loadedDoc = d;
+  editTextarea.value = d.editContent || '';
+  editTextarea.scrollTop = d.editScrollTop || 0;
+  updateGutter();
+  if (editGutterEl) editGutterEl.scrollTop = editTextarea.scrollTop;
 }
 
 export function syncEditUI() {
@@ -49,6 +98,7 @@ export function syncEditUI() {
     if (btnSaveFile) btnSaveFile.hidden = false;
     if (btnCancelEdit) btnCancelEdit.hidden = false;
     if (editViewEl) editViewEl.hidden = false;
+    if (editTextarea) loadEditContent(d);
     vp.hidden = true;
     const mv = $('#mdview');
     if (mv) mv.hidden = true;
@@ -97,6 +147,7 @@ export async function enterEditMode(line) {
   syncEditUI();
 
   editTextarea.value = text;
+  loadedDoc = d;
   updateGutter();
 
   const targetLine = line || d.cur || 1;
@@ -155,6 +206,7 @@ export async function saveActiveFile() {
     if (btnSaveFile) flashActionSuccess(btnSaveFile, 'Saved');
     showToast('✓', 'Saved ' + d.name);
     loadGutter(d);
+    triggerRefresh();
   } catch (err) {
     showToast('!', 'Failed to save: ' + (err.message || 'unknown error'));
   } finally {
@@ -165,7 +217,18 @@ export async function saveActiveFile() {
 export function initEditView() {
   if (!editTextarea) return;
 
+  let lastW = 0;
+  new ResizeObserver(() => {
+    const w = editTextarea.clientWidth;
+    if (S.wrap && w && w !== lastW && !editViewEl.hidden) updateGutter();
+    lastW = w;
+  }).observe(editTextarea);
+  new MutationObserver(() => {
+    if (!editViewEl.hidden) updateGutter();
+  }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
   editTextarea.addEventListener('scroll', () => {
+    if (loadedDoc) loadedDoc.editScrollTop = editTextarea.scrollTop;
     if (editGutterEl) editGutterEl.scrollTop = editTextarea.scrollTop;
   }, { passive: true });
 
