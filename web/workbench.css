@@ -1,0 +1,122 @@
+/* The workbench page and the holding page shown while a workspace starts
+   (workbench.go). Built from the app's own pieces in style.css (logo, panel
+   heads, the #status bar, metrics chip and menu, kbd, toast); this file only
+   lays them out. Colours come from theme tokens only. */
+#wb-app { display: flex; flex-direction: column; height: 100vh; }
+.wb-scroll { flex: 1; min-height: 0; overflow: auto; }
+.wb .grow { flex: 1; }
+.wb-faint { color: var(--faint); }
+
+.wb-main { max-width: 1100px; margin: 0 auto; padding: 40px 16px 32px; }
+.wb-hero { text-align: center; margin-bottom: 22px; }
+.wb-hero .empty-logo { margin-bottom: 10px; }
+.wb-tagline { margin: 0; color: var(--faint); }
+
+.wb-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--bg2);
+  color: var(--fg); text-decoration: none; white-space: nowrap; font-size: 12px;
+}
+.wb-btn:hover { background: var(--bg3); }
+.wb-btn.wb-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.wb-btn.wb-primary:hover { filter: brightness(1.08); }
+.wb-btn:focus-visible, .wb-link:focus-visible, .wb-row:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.wb-link { color: var(--accent-fg); font: 11px var(--ui); text-transform: none; letter-spacing: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-link:hover { text-decoration: underline; }
+
+.wb-open { display: flex; gap: 8px; }
+.wb-field { position: relative; flex: 1; min-width: 0; }
+.wb-field input {
+  width: 100%; padding: 8px 10px; font-family: var(--mono); font-size: 13px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--bg2);
+}
+.wb-field input:focus { border-color: var(--accent); }
+.wb-keys { margin: 8px 0 0; color: var(--faint); font-size: 11px; }
+.wb-keys kbd { padding: 1px 4px; }
+.wb-msg { margin: 8px 0 0; color: var(--err); font-size: 12px; }
+
+/* Folder completion under a path input. */
+.wb-suggest {
+  position: absolute; z-index: 60; top: calc(100% + 4px); left: 0; right: 0;
+  list-style: none; margin: 0; padding: 4px 0; max-height: 320px; overflow: auto;
+  background: var(--bg3); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+.wb-suggest li { display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer; font: 12px var(--mono); }
+.wb-suggest li[aria-selected="true"], .wb-suggest li:hover { background: var(--bg4); }
+.wb-suggest .wb-ico { color: var(--faint); display: inline-flex; }
+.wb-suggest .wb-sg-name { flex: none; color: var(--fg); }
+.wb-suggest .wb-sg-name b { color: var(--accent-fg); font-weight: 600; }
+.wb-suggest .wb-sg-path { flex: 1; min-width: 0; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+
+.wb-clone { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: var(--r-lg); background: var(--bg2); }
+.wb-clone p { margin: 0 0 10px; }
+.wb-clone .wb-clone-head { font-size: 13px; }
+.wb-clone-actions { display: flex; align-items: center; gap: 8px; margin: 10px 0 0 !important; }
+.wb-clone-dest { flex: 1; min-width: 0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.wb-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 22px; }
+@media (max-width: 760px) { .wb-cols { grid-template-columns: 1fr; } }
+.wb-panel { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg2); min-width: 0; }
+.wb-panel .panel-head { border-bottom: 1px solid var(--line); }
+.wb-check { display: inline-flex; align-items: center; gap: 4px; font: 11px var(--ui); text-transform: none; letter-spacing: 0; color: var(--faint); cursor: pointer; }
+.wb-check input { accent-color: var(--accent); }
+.wb-empty { margin: 0; padding: 16px 12px; color: var(--faint); font-size: 12px; }
+
+.wb-list { list-style: none; margin: 0; padding: 4px 0; max-height: 56vh; overflow: auto; }
+.wb-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px; color: inherit; text-decoration: none; min-width: 0; }
+.wb-row:hover { background: var(--bg3); }
+.wb-row .wb-ico { flex: none; color: var(--faint); display: inline-flex; }
+.wb-row .wb-ico.pr { color: var(--gi); }
+.wb-row .wb-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wb-row .wb-title, .wb-row .wb-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-row .wb-sub { color: var(--faint); font: 11px var(--mono); }
+.wb-row .wb-when { flex: none; color: var(--faint); font-size: 11px; }
+.wb-row .wb-acts { flex: none; display: flex; gap: 2px; visibility: hidden; }
+.wb-row:hover .wb-acts, .wb-row:focus-within .wb-acts, .wb-row .wb-acts .on { visibility: visible; }
+.wb-acts button { padding: 2px 5px; border-radius: var(--r); color: var(--faint); font-size: 12px; }
+.wb-acts button:hover { color: var(--fg); background: var(--bg4); }
+.wb-acts button.on { color: var(--accent-fg); }
+.wb-sep { margin: 4px 12px; border-top: 1px solid var(--line); }
+
+.wb-state { flex: none; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; color: var(--faint); }
+.wb-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.wb-state.running { color: var(--gi); }
+.wb-state.starting { color: var(--mark-active); }
+.wb-state.failed { color: var(--err); }
+
+.wb-crumbs { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.wb-crumbs .mini { margin-left: 0; display: inline-flex; padding: 3px; }
+.wb-path { flex: 1; min-width: 0; font: 12px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.wb-dirs .wb-row { cursor: pointer; }
+.wb-git { flex: none; font-size: 10px; padding: 0 5px; border: 1px solid var(--line); border-radius: var(--r); color: var(--gi); }
+.wb-clone-mode .wb-dirs .wb-git { border-color: var(--gi); }
+
+/* The app's status bar, standing alone at the bottom of the page. */
+.wb-status { gap: 10px; }
+.wb-status .side-actions { margin-left: 0; }
+#st-running { color: var(--faint); }
+/* Shed detail on narrow screens, as the app's status bar does (fit-N rules). */
+@media (max-width: 560px) {
+  .wb-status .metric-label, .wb-status #st-running, .wb-status .status-sep, .wb-status #st-ver { display: none; }
+  .wb-keys { display: none; }
+}
+
+/* Theme picker, opened from the palette button; placed like #metrics-menu. */
+.wb-menu {
+  position: fixed; z-index: 70; min-width: 200px; max-height: 60vh; overflow: auto;
+  list-style: none; margin: 0; padding: 4px 0;
+  background: var(--bg3); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+.wb-menu li { display: flex; align-items: center; gap: 10px; padding: 4px 12px; cursor: pointer; font: 12px var(--ui); color: var(--fg); }
+.wb-menu li[aria-selected="true"] { background: var(--bg4); }
+.wb-menu li .wb-faint { margin-left: auto; font-size: 11px; }
+
+/* Holding page. */
+.wb-holding { max-width: 640px; margin: 18vh auto 0; padding: 0 16px; }
+.wb-holding .empty-logo { justify-content: flex-start; margin-bottom: 20px; }
+.wb-holding-msg { font-size: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wb-holding-actions { display: flex; gap: 8px; margin-top: 20px; }
+.wb-error { white-space: pre-wrap; word-break: break-word; font: 12px var(--mono); color: var(--err); background: var(--bg2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 10px 12px; }
+.wb-spin { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: wb-spin 0.8s linear infinite; }
+@keyframes wb-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .wb-spin { animation: none; } }

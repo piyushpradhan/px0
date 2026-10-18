@@ -45,7 +45,7 @@ If the pull request is already merged:
 ### Multi-Session Isolation
 Each PR review runs as its own isolated process on its own port. Running `px0 https://github.com/owner/repo/pull/456` while another PR review or local workspace is open will not disturb existing sessions.
 
-From inside a running px0 browser session, the Command Palette (`Cmd/Ctrl+K` → **Git: Open Pull Request…**) launches a new review process in a fresh browser tab.
+From inside a running px0 browser session, the Command Palette (`Cmd/Ctrl+K` → **Git: Open Pull Request…**) launches a new review process in a fresh browser tab. In a workspace opened from the [workbench](workbench.md), the PR opens as another workbench workspace instead.
 
 ---
 

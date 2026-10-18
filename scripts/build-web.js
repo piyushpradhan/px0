@@ -17,8 +17,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 const srcDir = path.join(rootDir, 'web', 'src');
-const entryFile = path.join(srcDir, 'main.js');
-const outFile = path.join(rootDir, 'web', 'app.js');
+// Each entry is bundled on its own: the app, and the workbench page that a
+// bare `px0` serves (workbench.go), which shares only a few small modules.
+const bundles = [
+  { entry: path.join(srcDir, 'main.js'), out: path.join(rootDir, 'web', 'app.js') },
+  { entry: path.join(srcDir, 'workbench.js'), out: path.join(rootDir, 'web', 'workbench.js') },
+];
 
 function hasBun() {
   try {
@@ -29,8 +33,8 @@ function hasBun() {
   }
 }
 
-function buildWithBun() {
-  console.log('[build-web] Bundling with Bun...');
+function buildWithBun(entryFile, outFile) {
+  console.log(`[build-web] Bundling ${path.basename(entryFile)} with Bun...`);
   execFileSync('bun', [
     'build',
     entryFile,
@@ -48,8 +52,8 @@ function buildWithBun() {
  * Fallback bundler using pure Node.js if Bun is not installed.
  * Recursively resolves local ES module imports and emits an IIFE bundle.
  */
-function buildWithNode() {
-  console.log('[build-web] Bundling with Node.js fallback...');
+function buildWithNode(entryFile, outFile) {
+  console.log(`[build-web] Bundling ${path.basename(entryFile)} with Node.js fallback...`);
   const visited = new Set();
   const moduleOrder = [];
 
@@ -140,17 +144,19 @@ function compressVendorAssets() {
 
 function run() {
   const start = Date.now();
-  if (hasBun()) {
-    buildWithBun();
-  } else {
-    buildWithNode();
+  const bun = hasBun();
+  for (const { entry, out } of bundles) {
+    if (bun) buildWithBun(entry, out);
+    else buildWithNode(entry, out);
   }
   compressVendorAssets();
 
-  const stat = fs.statSync(outFile);
-  const sizeKb = (stat.size / 1024).toFixed(1);
   const duration = Date.now() - start;
-  console.log(`[build-web] Successfully built ${path.relative(rootDir, outFile)} (${sizeKb} KB) in ${duration}ms`);
+  for (const { out } of bundles) {
+    const sizeKb = (fs.statSync(out).size / 1024).toFixed(1);
+    console.log(`[build-web] Successfully built ${path.relative(rootDir, out)} (${sizeKb} KB)`);
+  }
+  console.log(`[build-web] Done in ${duration}ms`);
 }
 
 run();

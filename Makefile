@@ -81,6 +81,6 @@ publish:
 	@echo "  git push origin master --tags"
 
 clean:
-	rm -f px0 web/app.js
-	touch web/app.js
+	rm -f px0 web/app.js web/workbench.js
+	touch web/app.js web/workbench.js
 	rm -rf dist/

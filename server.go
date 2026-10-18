@@ -28,6 +28,7 @@ import (
 )
 
 //go:embed web/index.html web/style.css web/themes web/vendor
+//go:embed web/workbench.html web/workbench.css web/workbench.js
 //go:embed web/app.js
 var embedded embed.FS
 
@@ -66,6 +67,8 @@ type Server struct {
 	mux        *http.ServeMux
 	basePath   string
 	session    *sessionManager
+
+	workbenchURL string // the workbench's base path, when this px0 is one of its workspaces
 
 	lastReq atomic.Int64 // unix nanos of the most recent request
 }
@@ -876,6 +879,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"metrics":     getProcessMetrics(s.lsp),
 		"version":     version,
 		"basePath":    s.BasePath(),
+		"workbench":   s.workbenchURL,
 		"agent":       s.agent.Name(),
 		"agentModel":  s.agent.Model(),
 		"agentPinned": s.agent.Pinned(),

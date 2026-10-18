@@ -19,6 +19,7 @@ See full performance benchmarks and comparisons at [px0.ai/benchmarks](https://p
 
 ## Features
 
+- Review workbench: Run `px0` with no arguments to open any directory or pull request from one page, browse the filesystem, and reopen recent and pinned reviews later.
 - GitHub PR reviews & Git panel: Review pull requests directly (`px0 <pr-url>`), inspect scoped merge-base diffs, draft inline review comments, expand recent commits to browse what each one changed, and stage, commit, or push from the browser.
 - Unpushed commit review: Read the commits your branch is ahead of its tracking branch by, one file diff at a time, before you push them.
 - AI coding harness integration: Dispatch edits directly to Claude Code, Gemini CLI, Cursor Agent, Antigravity, OpenCode, Codex, Aider, or Goose with live reloading.
@@ -54,8 +55,11 @@ px0 --update
 ## Usage
 
 ```bash
-# Inspect current directory
+# Open the review workbench: pick any directory or paste a PR URL
 px0
+
+# Inspect current directory
+px0 .
 
 # Inspect a specific directory or file
 px0 ~/workspace/project
@@ -81,6 +85,11 @@ listener:
   network:    http://192.168.1.42:7777
 ```
 
+With no target, px0 serves the [review workbench](docs/features/workbench.md)
+instead, which runs each directory or PR you open as its own px0 under
+`/w/<id>/` on the same port. Its list of what you opened is saved in
+`$XDG_STATE_HOME/px0/workbench.json` (or `~/.px0/workbench.json`).
+
 Open the address that is reachable from your local machine. The list can
 include LAN, VPN, and container-network addresses, depending on the remote
 host's interfaces.
@@ -89,6 +98,7 @@ Access securely over Tailscale, WireGuard, reverse proxy, or Cloudflare Tunnel
 with zero remote setup overhead and workspace-confined file access
 (path traversal protection & DNS rebinding checks). Anyone who can reach the
 address can also edit files in that workspace, so expose it only over trusted networks.
+The workbench goes further: anyone who can reach it can browse and open any directory px0 can read.
 
 ## Development
 

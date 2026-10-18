@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -47,9 +48,10 @@ func main() {
 		_            = flag.Bool("y", false, "answer yes to prompts (deprecated; PRs are always opened without prompt)")
 		_            = flag.Bool("yes", false, "answer yes to prompts (alias for -y)")
 		basePathFlag = flag.String("base-path", "", "base URL path prefix to serve endpoints and assets from (e.g. /rev-123/)")
+		wbChild      = flag.Bool("workbench-child", false, "internal: run as a workspace of the px0 workbench")
 	)
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "px0 %s - a code navigator\n\nusage:\n  px0 [flags] [file or directory]\n  px0 [flags] <pr-url>\n\nflags:\n", version)
+		fmt.Fprintf(os.Stderr, "px0 %s - a code navigator\n\nusage:\n  px0 [flags]                      open the workbench\n  px0 [flags] <file or directory>\n  px0 [flags] <pr-url>\n\nflags:\n", version)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -58,7 +60,7 @@ func main() {
 		f := false
 		uiForcedColor = &f
 	}
-	if *quiet {
+	if *quiet || *wbChild {
 		uiQuiet = true
 	}
 	if *verbose {
@@ -77,6 +79,25 @@ func main() {
 		if err := runSelfUpdate(version); err != nil {
 			fatal(err)
 		}
+		return
+	}
+
+	// Without a target, px0 opens the workbench: a launcher for directories
+	// and pull requests that runs each one as a child px0 (workbench.go).
+	if flag.NArg() == 0 && !*wbChild {
+		var childArgs []string
+		for _, f := range []struct {
+			on   bool
+			flag string
+		}{{*noLSP, "-no-lsp"}, {*noGit, "-no-git"}, {*noAgent, "-no-agent"}, {*noTelemetry, "-no-telemetry"}} {
+			if f.on {
+				childArgs = append(childArgs, f.flag)
+			}
+		}
+		if *agentCmd != "" {
+			childArgs = append(childArgs, "-agent", *agentCmd)
+		}
+		runWorkbench(*host, *port, *basePathFlag, !*noOpen, !*noUpdate, childArgs)
 		return
 	}
 
@@ -109,7 +130,16 @@ func main() {
 	if isPR {
 		sp := newSpinner(fmt.Sprintf("Preparing PR #%d (%s/%s)...", prTarget.Number, prTarget.Owner, prTarget.Repo), os.Stdout)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		p, err := checkoutPR(ctx, prProvider, prTarget, ".", func(msg string) {
+		// Outside a clone of the PR's repository, use one the workbench knows,
+		// so the checkout is a worktree rather than a fresh clone.
+		cloneDir := "."
+		if top, _ := findPRRemote(".", prTarget.Owner, prTarget.Repo); top == "" {
+			st := &wbStore{path: workbenchStorePath()}
+			if known := knownClone(st.Load(), prTarget.Owner+"/"+prTarget.Repo); known != "" {
+				cloneDir = known
+			}
+		}
+		p, err := checkoutPR(ctx, prProvider, prTarget, cloneDir, func(msg string) {
 			sp.Update(msg)
 		})
 		cancel()
@@ -156,6 +186,15 @@ func main() {
 
 	pxSrv := NewServer(ix, lsp, configuredBasePath)
 	pxSrv.tel = tel
+	if *wbChild {
+		pxSrv.workbenchURL = workbenchBaseOf(configuredBasePath)
+	} else if pr != nil {
+		it := wbPRItem(prTarget)
+		it.Title = pr.meta.Title
+		go recordRecent(it)
+	} else {
+		go recordRecent(wbDirItem(root))
+	}
 	if pr != nil {
 		pxSrv.SetPR(pr)
 	}
@@ -170,6 +209,10 @@ func main() {
 	initDur := time.Since(tInit)
 
 	srv := &http.Server{Handler: pxSrv}
+	if *wbChild {
+		// The workbench reads this line for the address it proxies to.
+		fmt.Printf("%s%s\n", wbReadyPrefix, addr)
+	}
 
 	url := viewerURL(addr, initialFile, initialLine, configuredBasePath)
 	uiHeading("px0 "+version, nil, os.Stdout)
@@ -267,6 +310,14 @@ func main() {
 	interrupted := false
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	if *wbChild {
+		// The workbench holds our stdin open; it closes when the workbench
+		// stops this workspace or exits for any reason.
+		go func() {
+			io.Copy(io.Discard, os.Stdin)
+			stop <- syscall.SIGTERM
+		}()
+	}
 	go func() {
 		<-stop
 		interrupted = true
@@ -296,6 +347,104 @@ func main() {
 	if err != nil && err != http.ErrServerClosed {
 		fatal(err)
 	}
+}
+
+// runWorkbench serves the workbench until interrupted, then stops every
+// workspace it started.
+func runWorkbench(host string, port int, basePathFlag string, open, update bool, childArgs []string) {
+	if u := runningWorkbench(); u != "" {
+		uiStatus("ok", "workbench already running", u, 0, os.Stdout)
+		if open {
+			openBrowser(u)
+		}
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = resolved
+	}
+	basePath := "/"
+	if basePathFlag != "" {
+		basePath = cleanBasePath(basePathFlag)
+	} else if cfg := readSettings(); cfg.ServerBasePath != nil && *cfg.ServerBasePath != "" {
+		basePath = cleanBasePath(*cfg.ServerBasePath)
+	}
+
+	ln, addr, err := listen(host, port)
+	if err != nil {
+		fatal(err)
+	}
+	wb := newWorkbench(basePath, cwd, exe, childArgs)
+	srv := &http.Server{Handler: wb}
+
+	u := viewerURL(addr, "", 0, basePath)
+	_, boundPort, _ := net.SplitHostPort(addr)
+	writeWorkbenchLock(viewerURL(net.JoinHostPort("127.0.0.1", boundPort), "", 0, basePath))
+	defer removeWorkbenchLock()
+
+	uiHeading("px0 "+version, nil, os.Stdout)
+	uiKV("workbench", uiAccent(u, os.Stdout), 11, os.Stdout)
+	if host == "0.0.0.0" {
+		for _, networkURL := range networkURLs(addr, "", 0) {
+			uiKV("network", uiAccent(networkURL, os.Stdout), 11, os.Stdout)
+		}
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		uiStatus("warn", "anyone who can reach this address can browse and open any directory on this machine", "", 0, os.Stdout)
+	}
+	uiHint("ctrl-c to stop", os.Stdout)
+	if open {
+		go openBrowser(u)
+	}
+	if update {
+		go autoUpdate(version)
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	interrupted := false
+	go func() {
+		<-stop
+		interrupted = true
+		fmt.Print("\r")
+		uiStatus("info", "px0 stopped", "", 0, os.Stderr)
+		go func() {
+			<-stop
+			os.Exit(130)
+		}()
+		// Children first: their open event streams would hold Shutdown up.
+		wb.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+	err = srv.Serve(ln)
+	wb.Close()
+	if interrupted {
+		removeWorkbenchLock()
+		os.Exit(130)
+	}
+	if err != nil && err != http.ErrServerClosed {
+		removeWorkbenchLock()
+		fatal(err)
+	}
+}
+
+// workbenchBaseOf turns a workspace's base path (/<wb>/w/<id>/) back into the
+// workbench's own.
+func workbenchBaseOf(childBase string) string {
+	trimmed := strings.TrimSuffix(childBase, "/")
+	if i := strings.LastIndex(trimmed, "/w/"); i >= 0 {
+		return trimmed[:i+1]
+	}
+	return "/"
 }
 
 // resolveTarget turns a directory or file into a workspace root, along with an optional

@@ -2,6 +2,7 @@ import { $, S, doc_, api, apiPost, esc, withKeys } from './state.js';
 import { previewing, previewKind } from './markdown.js';
 import { layoutPref } from './diff.js';
 import { copyToClipboard, showToast } from './ui.js';
+import { fmtBytes, showMetrics, initMetricsMenu, closeMetricsMenu } from './metricsview.js';
 
 export function updateStatus() {
   const d = doc_();
@@ -93,11 +94,6 @@ export function setStatusNote(msg, timeoutMs = 0) {
   }
 }
 
-export function fmtBytes(n) {
-  if (n < 1024) return n + ' B';
-  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
-  return (n / 1048576).toFixed(1) + ' MB';
-}
 
 export function setLspState(j) {
   if (!j || !j.state) return;
@@ -430,74 +426,9 @@ export function initLspMenu() {
   });
 }
 
-const metricsMenuEl = $('#metrics-menu');
-let lastMetrics = null;
-
-function renderMetricsMenu(m) {
-  if (!metricsMenuEl || !m) return;
-  const lspRow = m.lspEnabled ? `
-      <div class="metrics-row">
-        <span class="metrics-label">Language Servers (RSS)</span>
-        <span class="metrics-val">${fmtBytes(m.lspMemBytes || 0)}</span>
-      </div>` : '';
-  metricsMenuEl.innerHTML = `
-    <div class="metrics-title">
-      <span>Process Metrics</span>
-      <span class="toast-chip">px0</span>
-    </div>
-    <div class="metrics-grid">
-      <div class="metrics-row">
-        <span class="metrics-label">Resident RAM (RSS)</span>
-        <span class="metrics-val">${fmtBytes(m.rssBytes || 0)}</span>
-      </div>
-      <div class="metrics-row">
-        <span class="metrics-label">CPU Usage</span>
-        <span class="metrics-val">${(m.cpuUsage != null ? m.cpuUsage : 0).toFixed(1)}%</span>
-      </div>
-      <div class="metrics-row">
-        <span class="metrics-label">Active Goroutines</span>
-        <span class="metrics-val">${m.goroutines || 0}</span>
-      </div>${lspRow}
-    </div>
-  `;
-}
-
-export function closeMetricsMenu() {
-  if (metricsMenuEl) metricsMenuEl.hidden = true;
-}
-
-function placeMetricsMenu() {
-  const contEl = $('#st-metrics');
-  if (!contEl || !metricsMenuEl) return;
-  const r = contEl.getBoundingClientRect();
-  metricsMenuEl.style.bottom = (innerHeight - r.top + 6) + 'px';
-  metricsMenuEl.style.right = Math.max(8, innerWidth - r.right) + 'px';
-  metricsMenuEl.style.left = 'auto';
-}
-
-export function toggleMetricsMenu() {
-  if (!metricsMenuEl) return;
-  if (!metricsMenuEl.hidden) {
-    closeMetricsMenu();
-    return;
-  }
-  if (lastMetrics) renderMetricsMenu(lastMetrics);
-  metricsMenuEl.hidden = false;
-  placeMetricsMenu();
-  refreshMetrics();
-}
-
 export function updateMetricsDisplay(m) {
   if (!m) return;
-  lastMetrics = m;
-  const cpuEl = $('#st-cpu');
-  const ramEl = $('#st-ram');
-  if (cpuEl) cpuEl.textContent = `${(m.cpuUsage != null ? m.cpuUsage : 0).toFixed(1)}%`;
-  if (ramEl) ramEl.textContent = fmtBytes(m.rssBytes || 0);
-  const lspWrap = $('#st-lspmem-wrap');
-  const lspEl = $('#st-lspmem');
-  if (lspWrap) lspWrap.hidden = !m.lspEnabled;
-  if (lspEl && m.lspEnabled) lspEl.textContent = fmtBytes(m.lspMemBytes || 0);
+  showMetrics(m);
   if (m.lspEnabled !== undefined) {
     if (m.lspMemBytes > 0) {
       S.lsp.anyRunning = true;
@@ -505,10 +436,6 @@ export function updateMetricsDisplay(m) {
       S.lsp.anyRunning = false;
     }
     drawLspStatus();
-  }
-  if (metricsMenuEl && !metricsMenuEl.hidden) {
-    renderMetricsMenu(m);
-    placeMetricsMenu();
   }
 }
 
@@ -520,26 +447,7 @@ export async function refreshMetrics() {
 }
 
 export function initMetrics() {
-  const contEl = $('#st-metrics');
-  if (contEl) {
-    contEl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleMetricsMenu();
-    });
-    contEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        toggleMetricsMenu();
-      }
-    });
-  }
-  addEventListener('click', (e) => {
-    const target = /** @type {HTMLElement|null} */ (e.target);
-    if (!target?.closest('#metrics-menu, #st-metrics')) closeMetricsMenu();
-  });
-  addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeMetricsMenu();
-  });
+  initMetricsMenu(refreshMetrics);
 }
 
 /* The status bar stays on one line. When its contents outgrow the width, it

@@ -1,0 +1,544 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func newTestStore(t *testing.T) *wbStore {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	return &wbStore{path: workbenchStorePath()}
+}
+
+func TestWorkbenchItemIDsAreStable(t *testing.T) {
+	a := wbDirItem("/work/repo/")
+	b := wbDirItem("/work/repo")
+	if a.ID != b.ID || len(a.ID) != 12 {
+		t.Fatalf("dir ids differ or wrong length: %q %q", a.ID, b.ID)
+	}
+	p1 := wbPRItem(PRTarget{Provider: "github", Owner: "Px0-AI", Repo: "px0", Number: 7, URL: "https://github.com/Px0-AI/px0/pull/7"})
+	p2 := wbPRItem(PRTarget{Provider: "github", Owner: "px0-ai", Repo: "PX0", Number: 7, URL: "https://github.com/px0-ai/px0/pull/7/files"})
+	if p1.ID != p2.ID {
+		t.Fatalf("same PR got different ids: %q %q", p1.ID, p2.ID)
+	}
+	if p1.ID == wbDirItem("px0-ai/px0#7").ID {
+		t.Fatal("dir and PR ids must not collide")
+	}
+}
+
+func TestWorkbenchStoreRecordKeepsPinAndTitle(t *testing.T) {
+	st := newTestStore(t)
+	it := wbPRItem(PRTarget{Provider: "github", Owner: "o", Repo: "r", Number: 1, URL: "u"})
+	it.Title = "Fix things"
+	if err := st.Record(it); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(func(f *wbFile) { f.Items[0].Pinned = true }); err != nil {
+		t.Fatal(err)
+	}
+	it.Title = "" // reopened before the title is known again
+	if err := st.Record(it); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := st.Get(it.ID)
+	if !ok || !got.Pinned || got.Title != "Fix things" || got.LastOpened == 0 {
+		t.Fatalf("got %+v", got)
+	}
+	if n := len(st.Load().Items); n != 1 {
+		t.Fatalf("want 1 item, got %d", n)
+	}
+}
+
+func TestWorkbenchStoreTrimsOldUnpinned(t *testing.T) {
+	st := newTestStore(t)
+	err := st.Update(func(f *wbFile) {
+		for i := 0; i < wbMaxRecent+10; i++ {
+			it := wbDirItem(filepath.Join("/d", string(rune('a'+i%26)), strings.Repeat("x", i)))
+			it.LastOpened = int64(i)
+			it.Pinned = i == 0 // the oldest, but pinned
+			f.Items = append(f.Items, it)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := st.Load().Items
+	if len(items) != wbMaxRecent+1 {
+		t.Fatalf("want %d items, got %d", wbMaxRecent+1, len(items))
+	}
+	if items[0].LastOpened != wbMaxRecent+9 {
+		t.Fatalf("not most recent first: %d", items[0].LastOpened)
+	}
+	pinned := false
+	for _, it := range items {
+		pinned = pinned || it.Pinned
+	}
+	if !pinned {
+		t.Fatal("pinned item was dropped")
+	}
+}
+
+func TestWorkbenchStoreSetsAsideCorruptFile(t *testing.T) {
+	st := newTestStore(t)
+	os.MkdirAll(filepath.Dir(st.path), 0o700)
+	os.WriteFile(st.path, []byte("{not json"), 0o600)
+	if n := len(st.Load().Items); n != 0 {
+		t.Fatalf("want empty, got %d", n)
+	}
+	if _, err := os.Stat(st.path + ".bad"); err != nil {
+		t.Fatalf("corrupt file not kept: %v", err)
+	}
+}
+
+func TestRemoteMatchesRepo(t *testing.T) {
+	cases := []struct {
+		origin string
+		want   bool
+	}{
+		{"git@github.com:px0-ai/px0.git\n", true},
+		{"https://github.com/PX0-AI/px0", true},
+		{"ssh://git@github.com/px0-ai/px0.git", true},
+		{"https://github.com/px0-ai/px0-docs.git", false},
+		{"https://github.com/other/px0.git", false},
+	}
+	for _, c := range cases {
+		if got := remoteMatchesRepo(c.origin, "px0-ai", "px0"); got != c.want {
+			t.Errorf("%q: got %v", c.origin, got)
+		}
+	}
+}
+
+func TestWorkbenchBaseOf(t *testing.T) {
+	cases := map[string]string{
+		"/w/abc/":          "/",
+		"/rev-1/w/abc/":    "/rev-1/",
+		"/a/w/b/w/abc123/": "/a/w/b/",
+		"/":                "/",
+	}
+	for in, want := range cases {
+		if got := workbenchBaseOf(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	cases := map[string]string{
+		"":       "/base",
+		"sub/":   "/base/sub",
+		"/abs/x": "/abs/x",
+		"~":      home,
+		"~/code": filepath.Join(home, "code"),
+	}
+	for in, want := range cases {
+		got, err := expandPath(in, "/base")
+		if err != nil || got != want {
+			t.Errorf("%q: got %q (%v), want %q", in, got, err, want)
+		}
+	}
+}
+
+func TestLineWriterSplitsLinesAndSpinnerFrames(t *testing.T) {
+	var got []string
+	lw := &lineWriter{fn: func(s string) { got = append(got, s) }}
+	io.WriteString(lw, "one\r\ntw")
+	io.WriteString(lw, "o\n⠋ Cloning\r⠙ Cloning\rpx0-ready 127.0.0.1:1\nlast")
+	lw.Flush()
+	want := []string{"one", "two", "px0-ready 127.0.0.1:1", "last"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestWorkbenchResolveTarget(t *testing.T) {
+	newTestStore(t)
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, "sub"), 0o755)
+	wb := &workbench{cwd: dir}
+
+	it, err := wb.resolveTarget("sub")
+	if err != nil || it.Kind != "dir" || filepath.Base(it.Path) != "sub" {
+		t.Fatalf("relative dir: %+v %v", it, err)
+	}
+	it, err = wb.resolveTarget("https://github.com/px0-ai/px0/pull/12")
+	if err != nil || it.Kind != "pr" || it.Repo != "px0-ai/px0" || it.Number != 12 {
+		t.Fatalf("pr: %+v %v", it, err)
+	}
+	for _, bad := range []string{"", "https://github.com/px0-ai/px0", filepath.Join(dir, "missing")} {
+		if _, err := wb.resolveTarget(bad); err == nil {
+			t.Errorf("%q: want error", bad)
+		}
+	}
+}
+
+func TestWorkbenchBrowseListsOnlyFolders(t *testing.T) {
+	newTestStore(t)
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "repo", ".git"), 0o755)
+	os.Mkdir(filepath.Join(dir, "plain"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".hidden"), 0o755)
+	os.WriteFile(filepath.Join(dir, "file.txt"), nil, 0o644)
+	wb := newWorkbench("/", dir, "", nil)
+
+	get := func(target, host string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", target, nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		wb.ServeHTTP(w, r)
+		return w
+	}
+	w := get("/api/wb/browse?path="+dir, "127.0.0.1:7777")
+	var res struct {
+		Entries []wbEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err, w.Body.String())
+	}
+	if len(res.Entries) != 2 || res.Entries[0].Name != "plain" || res.Entries[1].Name != "repo" || !res.Entries[1].Git {
+		t.Fatalf("got %+v", res.Entries)
+	}
+	if w := get("/api/wb/browse?path="+dir, "evil.example:7777"); w.Code != http.StatusForbidden {
+		t.Fatalf("rebound host: got %d", w.Code)
+	}
+}
+
+func TestWorkbenchOpenRequiresLocalPost(t *testing.T) {
+	newTestStore(t)
+	wb := newWorkbench("/", t.TempDir(), "", nil)
+	r := httptest.NewRequest("POST", "/api/wb/open", strings.NewReader(`{"target":"."}`))
+	r.Host = "127.0.0.1:7777"
+	r.Header.Set("Origin", "https://evil.example")
+	w := httptest.NewRecorder()
+	wb.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("got %d", w.Code)
+	}
+	if n := len(wb.store.Load().Items); n != 0 {
+		t.Fatalf("recorded %d items", n)
+	}
+}
+
+func TestWorkbenchUnknownWorkspace(t *testing.T) {
+	newTestStore(t)
+	wb := newWorkbench("/", t.TempDir(), "", nil)
+	r := httptest.NewRequest("GET", "/w/000000000000/", nil)
+	r.Host = "127.0.0.1:7777"
+	w := httptest.NewRecorder()
+	wb.ServeHTTP(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("got %d", w.Code)
+	}
+	r = httptest.NewRequest("GET", "/w/000000000000/api/meta", nil)
+	w = httptest.NewRecorder()
+	wb.ServeHTTP(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("api on stopped workspace: got %d", w.Code)
+	}
+}
+
+// End to end: a real px0 binary opened as a workspace, reached through the
+// workbench's proxy, then stopped through its stdin.
+func TestWorkbenchRunsChildThroughProxy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the px0 binary")
+	}
+	newTestStore(t)
+	exe := filepath.Join(t.TempDir(), "px0")
+	if out, err := exec.Command("go", "build", "-o", exe, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "hello.go"), []byte("package hello\n"), 0o644)
+
+	wb := newWorkbench("/base/", ws, exe, []string{"-no-lsp", "-no-agent", "-no-telemetry"})
+	srv := httptest.NewServer(wb)
+	defer srv.Close()
+	defer wb.Close()
+
+	post := func(path, body string) map[string]any {
+		r, _ := http.NewRequest("POST", srv.URL+path, strings.NewReader(body))
+		r.Header.Set("Origin", srv.URL)
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]any
+		json.NewDecoder(resp.Body).Decode(&m)
+		return m
+	}
+	opened := post("/base/api/wb/open", `{"target":"`+ws+`"}`)
+	id, _ := opened["id"].(string)
+	if id == "" || opened["href"] != "/base/w/"+id+"/" {
+		t.Fatalf("open: %v", opened)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		wb.mu.Lock()
+		c := wb.children[id]
+		state, msg := c.state, c.err
+		wb.mu.Unlock()
+		if state == "running" {
+			break
+		}
+		if state == "failed" || time.Now().After(deadline) {
+			t.Fatalf("child %s: %s", state, msg)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	resp, err := http.Get(srv.URL + "/base/w/" + id + "/api/meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		Root, Workbench, BasePath string
+	}
+	json.NewDecoder(resp.Body).Decode(&meta)
+	resp.Body.Close()
+	if meta.Workbench != "/base/" || meta.BasePath != "/base/w/"+id+"/" {
+		t.Fatalf("meta: %+v", meta)
+	}
+	if resolved, _ := filepath.EvalSymlinks(ws); meta.Root != resolved {
+		t.Fatalf("root %q, want %q", meta.Root, resolved)
+	}
+	// The status bar's totals cover the workbench and the running child.
+	resp, err = http.Get(srv.URL + "/base/api/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metrics struct {
+		RSSBytes uint64 `json:"rssBytes"`
+		Parts    []struct {
+			Name     string `json:"name"`
+			RSSBytes uint64 `json:"rssBytes"`
+		} `json:"parts"`
+	}
+	json.NewDecoder(resp.Body).Decode(&metrics)
+	resp.Body.Close()
+	if len(metrics.Parts) != 2 || metrics.RSSBytes != metrics.Parts[0].RSSBytes+metrics.Parts[1].RSSBytes || metrics.Parts[1].RSSBytes == 0 {
+		t.Fatalf("metrics: %+v", metrics)
+	}
+
+	if m := post("/base/api/wb/stop", `{"id":"`+id+`"}`); m["ok"] != true {
+		t.Fatalf("stop: %v", m)
+	}
+	wb.mu.Lock()
+	state := wb.children[id].state
+	wb.mu.Unlock()
+	if state != "stopped" {
+		t.Fatalf("after stop: %s", state)
+	}
+}
+
+// A target that fails on its first open leaves the list; the holding page
+// still explains why, without a Retry that could not work.
+func TestWorkbenchForgetsNewItemThatFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script as the child")
+	}
+	newTestStore(t)
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fake-px0")
+	os.WriteFile(exe, []byte("#!/bin/sh\necho 'px0: px0: github: fetch PR #9: 404 Not Found' >&2\nexit 1\n"), 0o755)
+	wb := newWorkbench("/", dir, exe, nil)
+	defer wb.Close()
+
+	it := wbPRItem(PRTarget{Provider: "github", Owner: "o", Repo: "r", Number: 9, URL: "https://github.com/o/r/pull/9"})
+	wb.store.Record(it)
+	wb.rememberClone(it.Repo, gitRepoWithRemotes(t, map[string]string{"origin": "https://github.com/o/r.git"}))
+	c := wb.start(it, true)
+	select {
+	case <-c.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("child never exited")
+	}
+	if c.state != "failed" || c.err != "github: fetch PR #9: 404 Not Found" {
+		t.Fatalf("state %q err %q", c.state, c.err)
+	}
+	if _, ok := wb.store.Get(it.ID); ok {
+		t.Fatal("failed new item still listed")
+	}
+	r := httptest.NewRequest("GET", "/w/"+it.ID+"/", nil)
+	r.Host = "127.0.0.1:7777"
+	w := httptest.NewRecorder()
+	wb.ServeHTTP(w, r)
+	body := w.Body.String()
+	if !strings.Contains(body, "404 Not Found") || strings.Contains(body, "retry=1") {
+		t.Fatalf("holding page:\n%s", body)
+	}
+}
+
+// gitRepoWithRemotes makes an empty git repository with the given remotes.
+func gitRepoWithRemotes(t *testing.T, remotes map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	for name, u := range remotes {
+		if out, err := exec.Command("git", "-C", dir, "remote", "add", name, u).CombinedOutput(); err != nil {
+			t.Fatalf("git remote add: %v %s", err, out)
+		}
+	}
+	resolved, _ := filepath.EvalSymlinks(dir)
+	return resolved
+}
+
+func TestFindPRRemotePrefersOriginThenUpstream(t *testing.T) {
+	fork := gitRepoWithRemotes(t, map[string]string{
+		"origin":   "git@github.com:me/px0.git",
+		"upstream": "https://github.com/px0-ai/px0.git",
+	})
+	if top, remote := findPRRemote(fork, "px0-ai", "px0"); top != fork || remote != "upstream" {
+		t.Fatalf("fork: %q %q", top, remote)
+	}
+	both := gitRepoWithRemotes(t, map[string]string{
+		"origin":   "https://github.com/px0-ai/px0",
+		"upstream": "https://github.com/px0-ai/px0.git",
+	})
+	if _, remote := findPRRemote(both, "px0-ai", "px0"); remote != "origin" {
+		t.Fatalf("both: %q", remote)
+	}
+	other := gitRepoWithRemotes(t, map[string]string{"origin": "https://github.com/px0-ai/px0-docs.git"})
+	if top, _ := findPRRemote(other, "px0-ai", "px0"); top != "" {
+		t.Fatalf("other repo matched: %q", top)
+	}
+}
+
+func TestScanForCloneFindsNestedClone(t *testing.T) {
+	root := t.TempDir()
+	clone := filepath.Join(root, "work", "px0")
+	os.MkdirAll(filepath.Join(root, "work", "node_modules", "px0"), 0o755)
+	if out, err := exec.Command("git", "init", "-q", clone).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	exec.Command("git", "-C", clone, "remote", "add", "origin", "git@github.com:px0-ai/px0.git").Run()
+	want, _ := filepath.EvalSymlinks(clone)
+	if got := scanForClone(context.Background(), []string{root}, "px0-ai/px0"); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if got := scanForClone(context.Background(), []string{root}, "px0-ai/other"); got != "" {
+		t.Fatalf("found a clone of the wrong repo: %q", got)
+	}
+}
+
+func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest("POST", path, strings.NewReader(body))
+	r.Host = "127.0.0.1:7777"
+	r.Header.Set("Origin", "http://127.0.0.1:7777")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+// Opening a PR with no known clone asks for one and records nothing; giving
+// a folder that is not a clone is refused; a real clone is remembered.
+func TestWorkbenchOpenPRAsksForClone(t *testing.T) {
+	newTestStore(t)
+	t.Setenv("HOME", t.TempDir()) // keep the scan away from real code folders
+	wb := newWorkbench("/", t.TempDir(), "/nonexistent/px0", nil)
+	defer wb.Close()
+	pr := "https://github.com/acme/widget/pull/5"
+
+	w := postJSON(t, wb, "/api/wb/open", `{"target":"`+pr+`"}`)
+	var res map[string]any
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res["needClone"] != true || res["repo"] != "acme/widget" {
+		t.Fatalf("got %s", w.Body.String())
+	}
+	if n := len(wb.store.Load().Items); n != 0 {
+		t.Fatalf("recorded %d items before a clone was chosen", n)
+	}
+
+	notClone := t.TempDir()
+	if w := postJSON(t, wb, "/api/wb/open", `{"target":"`+pr+`","clone":"`+notClone+`"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("non-clone accepted: %d %s", w.Code, w.Body.String())
+	}
+
+	clone := gitRepoWithRemotes(t, map[string]string{"origin": "git@github.com:acme/widget.git"})
+	if w := postJSON(t, wb, "/api/wb/open", `{"target":"`+pr+`","clone":"`+clone+`"}`); w.Code != http.StatusOK {
+		t.Fatalf("clone refused: %d %s", w.Code, w.Body.String())
+	}
+	if got := wb.store.Load().Clones["acme/widget"]; got != clone {
+		t.Fatalf("remembered %q, want %q", got, clone)
+	}
+	// Next time it is found without asking.
+	w = postJSON(t, wb, "/api/wb/open", `{"target":"https://github.com/acme/widget/pull/6"}`)
+	if strings.Contains(w.Body.String(), "needClone") {
+		t.Fatalf("asked again: %s", w.Body.String())
+	}
+}
+
+func TestWorkbenchCompleteFolders(t *testing.T) {
+	newTestStore(t)
+	dir := t.TempDir()
+	for _, d := range []string{"Projects", "proto", "public", ".private", "other"} {
+		os.Mkdir(filepath.Join(dir, d), 0o755)
+	}
+	os.WriteFile(filepath.Join(dir, "profile.txt"), nil, 0o644)
+	os.MkdirAll(filepath.Join(dir, "proto", ".git"), 0o755)
+	wb := newWorkbench("/", dir, "", nil)
+
+	complete := func(q string) []wbEntry {
+		r := httptest.NewRequest("GET", "/api/wb/complete?q="+url.QueryEscape(q), nil)
+		r.Host = "127.0.0.1:7777"
+		w := httptest.NewRecorder()
+		wb.ServeHTTP(w, r)
+		var res struct{ Entries []wbEntry }
+		json.Unmarshal(w.Body.Bytes(), &res)
+		return res.Entries
+	}
+	names := func(es []wbEntry) string {
+		var n []string
+		for _, e := range es {
+			n = append(n, e.Path)
+		}
+		return strings.Join(n, ",")
+	}
+	if got := names(complete("pr")); got != "proto/,Projects/" {
+		t.Fatalf("relative prefix: %s", got)
+	}
+	if got := names(complete(dir + "/P")); got != dir+"/Projects/,"+dir+"/proto/,"+dir+"/public/" {
+		t.Fatalf("absolute, case-insensitive: %s", got)
+	}
+	if got := names(complete(dir + "/.p")); got != dir+"/.private/" {
+		t.Fatalf("hidden only when typed: %s", got)
+	}
+	if es := complete("proto"); len(es) != 1 || !es[0].Git {
+		t.Fatalf("git flag: %+v", es)
+	}
+	if got := complete("https://github.com/x"); len(got) != 0 {
+		t.Fatalf("URL completed: %v", got)
+	}
+}
+
+func TestWorkbenchSettingsOnlyTakesTheme(t *testing.T) {
+	newTestStore(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	wb := newWorkbench("/", t.TempDir(), "", nil)
+	if w := postJSON(t, wb, "/api/settings", `{"github.token":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("token accepted: %d", w.Code)
+	}
+	if w := postJSON(t, wb, "/api/settings", `{"workbench.colorTheme":"rose-pine"}`); w.Code != http.StatusOK {
+		t.Fatalf("theme refused: %d %s", w.Code, w.Body.String())
+	}
+	if got := wbTheme(); got != "rose-pine" {
+		t.Fatalf("theme %q", got)
+	}
+}

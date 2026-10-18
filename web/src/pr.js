@@ -792,10 +792,31 @@ function renderCommentsPanel() {
 // invocation does. A failed checkout only ever shows in that child's own
 // terminal, not here -- see docs/internals/github-pr-review.md.
 export async function launchPR(target) {
+  if (S.meta?.workbench) return launchPRInWorkbench(target);
   try {
     await apiPostJson('/api/pr/launch', { target });
     showToast('✓', 'Opening PR in a new tab…');
   } catch (e) {
+    showToast('!', e.message || 'Could not launch PR review');
+  }
+}
+
+// Inside the workbench the PR becomes one more workspace there, in a new tab,
+// instead of a separate px0 on its own port. The tab is opened before the
+// request so the browser still counts it as the user's own action.
+async function launchPRInWorkbench(target) {
+  const tab = window.open('about:blank', '_blank');
+  try {
+    const r = await fetch(new URL(S.meta.workbench + 'api/wb/open', location.origin), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    const href = new URL(j.href, location.origin).href;
+    if (tab) tab.location.href = href;
+    else location.href = href;
+  } catch (e) {
+    tab?.close();
     showToast('!', e.message || 'Could not launch PR review');
   }
 }

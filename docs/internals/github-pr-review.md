@@ -184,7 +184,7 @@ Unlike a formal review submission, Push is not gated on `p.writeAccess` — that
   - Toggles `#pr-merged-badge` (purple pill) when `meta.merged` is true.
   - Houses **⚡ Batch Apply** and **Submit Review** controls.
 - **Child PR Launching**:
-  - Command Palette **Git: Open Pull Request…** posts to `/api/pr/launch`.
+  - Command Palette **Git: Open Pull Request…** posts to `/api/pr/launch`, or, in a workbench child (`S.meta.workbench` set), to the workbench's `/api/wb/open` (see [workbench.md](workbench.md)).
   - Spawns `px0 -y <url>` in a new detached process on an ephemeral port.
 - **Git Panel Resync (`web/src/pr.js`'s `refreshPRMeta`)**:
   - Called by `gitpanel.js` after a successful Pull. Re-fetches `/api/pr/meta`, re-renders the PR bar, and re-fetches existing/draft comments, so a PR that moved forward under the reviewer never leaves the bar, diff warning, or comment threads showing the state from session start.

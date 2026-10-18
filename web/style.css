@@ -59,6 +59,7 @@ body.side-hidden #side, body.side-hidden #resizer { display: none; }
   font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--dim);
 }
 .panel-head #root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-head .wb-back { margin-left: 0; flex: none; display: inline-flex; padding: 3px; }
 .panel-actions { margin-left: auto; flex: none; display: flex; align-items: center; gap: 4px; }
 .panel-actions .mini { margin-left: 0; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; }
 .panel-actions .mini svg { display: block; }
