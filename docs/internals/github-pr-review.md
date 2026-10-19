@@ -10,7 +10,7 @@ Two core px0 tenets shape pull request reviews:
 
 - **Zero-dependency shell-out**: Like `git.go` (which links no Go git library), px0 avoids external forge SDKs. `github.go` uses standard Go `net/http` against the GitHub REST API, plus an optional shell-out to `gh auth token`. Checkout itself uses standard `git fetch`, `git worktree add`, or `git clone` via `exec.Command`.
 - **Stateless on disk**: px0 maintains no persistent cache in `~/.px0`. A PR checkout is strictly process-scoped: `checkoutPR` (`pr.go`) places the worktree in `os.MkdirTemp("", "px0-pr-*")`, and `prSession.Close` removes it upon exit (`Ctrl+C` or normal shutdown). This ensures zero leftover disk clutter and prevents stale cache bugs.
-- **In-memory draft comments**: Draft comments live in `prSession.comments` as a thread-safe, mutex-guarded slice in server memory. They never touch disk and vanish when the process exits (submitted or discarded).
+- **Persisted draft comments**: Draft comments live in `prSession.comments` as a thread-safe, mutex-guarded slice in server memory. Every add, delete and submit also writes them to the workspace session file (see [§6](#6-draft-comments-submission--batch-apply)), so unsubmitted drafts survive a restart of the same review.
 
 ---
 
@@ -106,7 +106,7 @@ When `meta.Merged` is true, px0 does not block or prompt: it proceeds immediatel
 ### Unauthenticated Read-Only Mode
 If no token is found:
 - Public repository metadata, worktree creation, and diff calculation proceed normally.
-- Draft comments can be created in memory and batch-applied locally with AI agents.
+- Draft comments can be created locally and batch-applied with AI agents.
 - The CLI banner alerts the user:
   ```text
   access: read-only (no github token: set GITHUB_TOKEN or gh auth login to submit reviews)
@@ -130,7 +130,13 @@ func gitMergeBase(root, a, b string) string
 
 ## 6. Draft Comments, Submission & Batch Apply
 
-### In-Memory Drafts
+### Drafts and the Session File
+Drafts are held in `prSession.comments` and mirrored to the workspace session file by `sessionManager` ([`session.go`](../../session.go)). Adding or deleting a draft writes `WorkspaceSession.Drafts`; a successful submit clears it. When `SetPR` attaches a checkout and `prSession.comments` is empty, it loads the saved drafts and advances `nextID` past them.
+
+The file lives at `$XDG_STATE_HOME/px0/sessions/<key>.json`, falling back to `~/.px0/sessions/` or `os.TempDir()/px0-sessions/`. The key is the `-base-path` with slashes replaced by `_`, or, when there is no base path, the first 8 bytes of the SHA-256 of the workspace root as hex. A PR opened directly with `px0 <pr-url>` and no base path checks out into a new temporary directory each time, so its key changes and drafts do not carry over between runs. A PR opened from the [workbench](workbench.md) runs under a stable `/w/<id>/` base path, so its drafts do.
+
+The file also has `tabs`, `active` and `openDirs` fields, and `/api/session` still reads and writes them, but the browser no longer uses them: open tabs and expanded folders are not restored on reload.
+
 - `GET /api/pr/comments`: Returns current drafts.
 - `POST /api/pr/comments`: Appends a line comment (`Path`, `Line`, `Side`, `Body`). Allowed unauthenticated so reviewers can draft feedback locally.
 - `POST /api/pr/comments/delete`: Deletes a draft by ID.
@@ -141,7 +147,7 @@ Users can delegate all drafted PR comments directly to an AI coding agent (Claud
 ### Formal Review Submission
 - `POST /api/pr/submit`: Requires auth token.
 - Calls `provider.SubmitReview` which constructs a single review payload containing the head commit SHA, all drafted comments, and the review body/event (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`).
-- Clears in-memory drafts upon successful submission.
+- Clears the drafts, in memory and in the session file, upon successful submission.
 
 ---
 

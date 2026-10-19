@@ -42,7 +42,7 @@ To keep iteration fast and avoid unnecessary delays:
 
 1. **Reads First, Edits via Harness**: `px0` is an ultra-fast code reader and reviewer. File modifications are delegated to external coding harnesses (`agent.go`, `thread.go`), never authored directly to disk by `px0` (with the exception of explicit user-initiated Git operations in the sidebar).
 2. **Zero Runtime Dependencies**: The output must remain a single, standalone static binary. No CGO, no Node.js runtime requirement for the user, no external databases.
-3. **No Workspace Litter**: `px0` never creates `.px0/` folders or cache files inside a workspace tree. Persistent configuration and thread transcripts live in `$XDG_CONFIG_HOME/px0/` or `~/.px0/`.
+3. **No Workspace Litter**: `px0` never creates `.px0/` folders or cache files inside a workspace tree. Persistent configuration and thread transcripts live in `$XDG_CONFIG_HOME/px0/` or `~/.px0/`; per-workspace session files (PR review drafts) and the workbench store live in `$XDG_STATE_HOME/px0/` or `~/.px0/`.
 4. **Fast & Non-Blocking**: Operations must remain responsive. All background tasks, network calls, and git operations must respect timeouts and set `GIT_TERMINAL_PROMPT=0`.
 
 ---

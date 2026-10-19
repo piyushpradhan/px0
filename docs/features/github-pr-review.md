@@ -73,7 +73,7 @@ When hovering over code lines or diff lines:
 ### 4. Batch Applying Comments Locally (`⚡ Batch Apply`)
 Drafted review comments appear in the PR top bar and inline across files:
 - **⚡ Batch Apply**: Lets you apply all drafted review comments across the entire pull request in one go using your configured coding agent harness. The agent reads your comments as instructions and modifies the code directly in the PR worktree.
-- Comments remain drafts in memory until either batch-applied or formally submitted.
+- Comments remain drafts until either batch-applied or formally submitted. Drafts are saved outside the repository, so a PR reopened from the [workbench](workbench.md) keeps them. A PR opened directly with `px0 <pr-url>` starts with no drafts each run, unless a base path is set.
 
 ### 5. Submitting Formal Reviews
 The PR review bar above the editor tabs hosts the overall review summary and verdict actions:
@@ -104,7 +104,7 @@ px0 discovers forge credentials in the following order:
 ### Unauthenticated & Read-Only Access
 If no token is configured:
 - Public repositories still check out and diff seamlessly.
-- You can draft review comments in memory and use **⚡ Batch Apply** with local AI agents.
+- You can draft review comments locally and use **⚡ Batch Apply** with local AI agents.
 - Formal review submission back to the remote forge requires an auth token. The CLI banner displays:
   ```text
   access: read-only (no github token: set GITHUB_TOKEN or gh auth login to submit reviews)
