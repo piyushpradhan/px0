@@ -338,7 +338,7 @@ func TestPRSessionPush(t *testing.T) {
 		target:   PRTarget{Owner: "o", Repo: "r"},
 		meta:     PRMeta{Number: 1, HeadRef: "feature", HeadRepoCloneURL: upstream},
 	}
-	if err := p.Push(); err != nil {
+	if err := p.Push(false); err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
 

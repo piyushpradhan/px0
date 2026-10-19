@@ -254,7 +254,7 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
     activeDoc.scrollTop = vp.scrollTop;
     if (previewing(activeDoc)) {
       const mv = $('#mdview');
-      if (mv) activeDoc.mdScroll = mv.scrollTop;
+      if (mv && !mv.hidden) activeDoc.mdScroll = mv.scrollTop;
     }
   }
 
@@ -322,6 +322,7 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
       table: !!j.table,
       deleted: !!j.deleted,
       mdScroll: keep.mdScroll || 0,
+      mdLine: keep.mdLine || 0,
       gutter: null,
       diffMode,
       diffAvailable: hasDiff,

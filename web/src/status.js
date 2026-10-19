@@ -18,7 +18,8 @@ export function updateStatus() {
   }
 
   // Markdown and CSV/TSV tabs share the preview switch; only its label differs.
-  const kind = previewKind(d), isMd = !!kind, shown = previewing(d);
+  // Hidden while editing: the editor is the source, and the switch has nothing to show.
+  const kind = d && d.isEditing ? '' : previewKind(d), isMd = !!kind, shown = previewing(d);
   const label = kind === 'table' ? 'Table' : 'Preview';
   const mdBtn = $('[data-action="md-preview"]');
   if (mdBtn) {

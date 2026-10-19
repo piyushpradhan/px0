@@ -30,6 +30,6 @@ Have an idea to make reading and navigating code faster or smoother?
 
 1. Review: Maintainers evaluate every issue against px0's design philosophy (simplicity, single-binary distribution, minimal resource consumption, speed).
 1. Assessment: We determine whether the proposal is apt, feasible, and aligned with the project roadmap.
-1. Execution: If approved, we formulate prompt specifications and task plans, and our AI agents implement, test, benchmark, and release the changes.
+1. Execution: If approved, we formulate prompt specifications and task plans, and our AI agents implement, test, benchmark, document, and release the changes. Any major or user-facing feature addition must include a corresponding tip added to `tips.json` (served at `https://px0.ai/tips.json`) and built-in offline default tips.
 
 Thank you for helping make px0 better.

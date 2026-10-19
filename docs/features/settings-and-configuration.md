@@ -55,7 +55,13 @@ px0 stores all configuration in a single per-user global file (`~/.px0/settings.
 | `lsp.hover.enabled` | LSP | `true` | `true`, `false` | Hover documentation cards |
 | `agent.harness` | Coding Agent | `""` | `claude`, `gemini`, `agy`, etc. | Preferred CLI coding harness |
 | `agent.timeoutSeconds` | Coding Agent | `120` | `10` – `600` (seconds) | Max runtime for agent edits |
-| `github.token` | GitHub | `""` | any string | Personal access token for `px0 pr` review; takes precedence over `GITHUB_TOKEN` and `gh auth token`. Masked in the Settings UI. |
+| `github.token` | GitHub | `""` | any string | Personal access token for GitHub pull request review; takes precedence over `GITHUB_TOKEN` and `gh auth token`. Masked in the Settings UI. |
+| `gitlab.token` | GitLab | `""` | any string | Personal access token (`api` scope) for GitLab merge request review. Sent only to `gitlab.host`; takes precedence over `GITLAB_TOKEN`. Masked in the Settings UI. |
+| `gitlab.host` | GitLab | `""` | host name | The instance `gitlab.token` belongs to. Falls back to `GITLAB_HOST`, then `gitlab.com`. Set automatically when you connect through the Connect dialog. |
+| `gitea.token` | Gitea | `""` | any string | Access token for Gitea, Forgejo or Codeberg pull request review. Sent only to `gitea.host`; takes precedence over `GITEA_TOKEN`. Masked in the Settings UI. |
+| `gitea.host` | Gitea | `""` | host name | The instance `gitea.token` belongs to. Falls back to `GITEA_HOST`, then `codeberg.org`. Set automatically when you connect through the Connect dialog. |
+| `bitbucket.token` | Bitbucket | `""` | any string | Bitbucket Cloud access token, or an Atlassian API token together with `bitbucket.email`. Takes precedence over `BITBUCKET_TOKEN`. Masked in the Settings UI. |
+| `bitbucket.email` | Bitbucket | `""` | email | The Atlassian account email of an API token; empty for an access token. Falls back to `BITBUCKET_EMAIL`. |
 | `server.basePath` | Server | `"/"` | any path prefix (e.g. `"/rev-123/"`) | Base URL path prefix to serve endpoints and assets from. Overridden by the `-base-path` CLI flag. |
 
 ---

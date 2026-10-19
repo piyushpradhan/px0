@@ -1057,7 +1057,7 @@ func (wb *workbench) resolveTarget(target string) (wbItem, error) {
 		return wbPRItem(pt), nil
 	}
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		return wbItem{}, errors.New("not a pull request URL (e.g. https://github.com/owner/repo/pull/123)")
+		return wbItem{}, errors.New("not a pull or merge request URL (e.g. " + prURLExamples + ")")
 	}
 	p, err := expandPath(target, wb.cwd)
 	if err != nil {

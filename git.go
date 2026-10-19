@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -301,15 +302,38 @@ var lockfileExclusions = []string{
 // (lockfiles, minified assets) are excluded when other changes exist.
 // Fails quiet -> "".
 func gitStagedDiff(root string) string {
+	return gitPromptDiff(root, "--cached")
+}
+
+// gitRangeDiff is gitStagedDiff for the commits between from and to: what a
+// squash of a PR would land, trimmed the same way for a harness prompt.
+func gitRangeDiff(root, from, to string) string {
+	return gitPromptDiff(root, from, to)
+}
+
+// gitRangeStat is the diffstat between from and to.
+func gitRangeStat(root, from, to string) string {
 	if !gitAvailable(root) {
 		return ""
 	}
+	out, err := exec.Command("git", "-C", root, "diff", "--stat", from, to).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitPromptDiff(root string, diffArgs ...string) string {
+	if !gitAvailable(root) {
+		return ""
+	}
+	base := append([]string{"-C", root, "diff", "--no-color"}, diffArgs...)
 	// Try fetching the diff excluding high-noise files (lockfiles, minified bundles)
-	cmdArgs := append([]string{"-C", root, "diff", "--no-color", "--cached", "--", "."}, lockfileExclusions...)
+	cmdArgs := append(append(append([]string(nil), base...), "--", "."), lockfileExclusions...)
 	out, err := exec.Command("git", cmdArgs...).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 		// Fallback to unfiltered diff if excluded diff was empty or failed (e.g. only lockfiles were modified)
-		out, err = exec.Command("git", "-C", root, "diff", "--no-color", "--cached").Output()
+		out, err = exec.Command("git", base...).Output()
 		if err != nil {
 			return ""
 		}
@@ -400,6 +424,77 @@ func gitFFOnlyPull(root, remote, ref string) error {
 	}
 	if _, err := exec.Command("git", "-C", root, "merge", "--ff-only", "FETCH_HEAD").CombinedOutput(); err != nil {
 		return errNotFastForward
+	}
+	return nil
+}
+
+// gitOpInProgress names the history-rewriting operation left half-done in
+// the repository -- "rebase" or "merge" -- or "" when there is none. A
+// conflicted rebase or merge (from a harness that gave up, or a terminal)
+// would otherwise just look like a dirty working tree.
+func gitOpInProgress(root string) string {
+	gd := gitDir(root)
+	if gd == "" {
+		return ""
+	}
+	exists := func(name string) bool {
+		_, err := os.Stat(filepath.Join(gd, name))
+		return err == nil
+	}
+	if exists("rebase-merge") || exists("rebase-apply") {
+		return "rebase"
+	}
+	if exists("MERGE_HEAD") {
+		return "merge"
+	}
+	return ""
+}
+
+// gitRebasingBranch returns the branch a rebase in progress is rewriting
+// (HEAD itself is detached until it finishes), or "" when there is none.
+func gitRebasingBranch(root string) string {
+	gd := gitDir(root)
+	if gd == "" {
+		return ""
+	}
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		if b, err := os.ReadFile(filepath.Join(gd, dir, "head-name")); err == nil {
+			return strings.TrimPrefix(strings.TrimSpace(string(b)), "refs/heads/")
+		}
+	}
+	return ""
+}
+
+// gitIsAncestor reports whether commit a is an ancestor of (or equal to) b.
+func gitIsAncestor(root, a, b string) bool {
+	return exec.Command("git", "-C", root, "merge-base", "--is-ancestor", a, b).Run() == nil
+}
+
+// gitAheadBehindRef counts the commits HEAD has that ref does not, and the
+// other way round. Both are 0 when ref doesn't resolve.
+func gitAheadBehindRef(root, ref string) (ahead, behind int) {
+	out, err := exec.Command("git", "-C", root, "rev-list", "--left-right", "--count", "HEAD..."+ref).Output()
+	if err != nil {
+		return 0, 0
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) >= 2 {
+		ahead, _ = strconv.Atoi(parts[0])
+		behind, _ = strconv.Atoi(parts[1])
+	}
+	return ahead, behind
+}
+
+// gitAbortOp aborts the rebase or merge in progress, restoring the branch to
+// where it was before that operation started.
+func gitAbortOp(root string) error {
+	op := gitOpInProgress(root)
+	if op == "" {
+		return errors.New("no rebase or merge in progress")
+	}
+	out, err := exec.Command("git", "-C", root, op, "--abort").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git %s --abort: %w: %s", op, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

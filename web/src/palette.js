@@ -22,6 +22,7 @@ import { getDocRaw } from './markdown.js';
 import { getSelectedRangeInfo } from './selbar.js';
 import { enterEditMode, exitEditMode, saveActiveFile } from './editview.js';
 import { promptNewItem } from './newitem.js';
+import { navigateToTips, showTipWidget } from './tips.js';
 
 export const overlay = $('#overlay');
 export const palInput = $('#pal');
@@ -105,6 +106,8 @@ export const COMMANDS = [
   { name: 'Git: Open Pull Request…', run: () => openPalette('openpr', '') },
   { name: 'Preferences: Toggle Vim Keybindings', run: () => setVimModeEnabled(!isVimEnabled(), true) },
   { name: 'Help: Vim Keybindings Cheat Sheet', run: showVimHelp },
+  { name: 'Help: Tips & Tricks (All Tips)', run: () => navigateToTips() },
+  { name: 'Help: Show Tip', run: () => showTipWidget() },
   { name: 'Keyboard Shortcuts', run: showHelp },
 ];
 

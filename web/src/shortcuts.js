@@ -24,6 +24,7 @@ import { handleImageKey } from './imageview.js';
 import { submitBatch } from './agent.js';
 import { reindexWorkspace } from './panels.js';
 import { enterEditMode, exitEditMode, saveActiveFile } from './editview.js';
+import { navigateToTips } from './tips.js';
 
 /* Each entry lists alternative combos, written as for keyLabel in state.js so
    they show as ⌘/⌥/⇧ on a Mac and Ctrl/Alt/Shift elsewhere. Browsers keep
@@ -59,7 +60,10 @@ export function showHelp() {
   const h = $('#helpsheet');
   const ver = S.meta?.version ? ` <span class="help-version">v${esc(S.meta.version)}</span>` : '';
   h.innerHTML = '<div class="help-card"><div class="help-header"><h2>Keyboard Shortcuts</h2>' + ver +
-    '<button id="btn-switch-to-vim-help" class="settings-btn-link" style="margin-left:auto;font-size:12px;cursor:pointer;" title="View Vim Keybindings">View Vim Keybindings</button></div><dl class="help-grid">' +
+    '<div style="margin-left:auto;display:flex;gap:12px;align-items:center;">' +
+    '<button id="btn-switch-to-tips" class="settings-btn-link" style="font-size:12px;cursor:pointer;" title="View Tips & Tricks">💡 Tips & Tricks</button>' +
+    '<button id="btn-switch-to-vim-help" class="settings-btn-link" style="font-size:12px;cursor:pointer;" title="View Vim Keybindings">View Vim Keybindings</button>' +
+    '</div></div><dl class="help-grid">' +
     SHORTCUTS.map(([combos, v]) => {
       const comboList = Array.isArray(combos) ? combos : [combos];
       return '<dt>' + comboList.map(keyCaps).filter(Boolean).join('<span class="key-or">/</span>') + '</dt>' +
@@ -71,6 +75,11 @@ export function showHelp() {
     h.hidden = true;
     showVimHelp();
   });
+  h.querySelector('#btn-switch-to-tips')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    h.hidden = true;
+    navigateToTips();
+  });
 }
 
 export const inField = el => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
@@ -78,7 +87,7 @@ export const inField = el => el && (el.tagName === 'INPUT' || el.tagName === 'TE
 export function initShortcuts() {
   $('#btn-theme')?.addEventListener('click', cycleTheme);
   $('#btn-settings')?.addEventListener('click', () => openSettings('ui'));
-  $('#btn-help')?.addEventListener('click', showHelp);
+  $('#btn-help')?.addEventListener('click', () => navigateToTips());
   $('#st-ver')?.addEventListener('click', showHelp);
   $('#helpsheet').addEventListener('click', () => { $('#helpsheet').hidden = true; });
 

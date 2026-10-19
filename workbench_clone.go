@@ -226,7 +226,7 @@ func (wb *workbench) makeClone(c *wbChild, it wbItem) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("not a pull request URL: %s", it.URL)
 	}
-	token, _ := provider.ResolveToken(readSettings())
+	token, _ := provider.ResolveToken(readSettings(), pt)
 	wb.setProgress(c, fmt.Sprintf("Cloning %s into %s (once; later pull requests reuse it)", it.Repo, tildePath(dest)))
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -238,10 +238,10 @@ func (wb *workbench) makeClone(c *wbChild, it wbItem) (string, error) {
 		return "", err
 	}
 	defer os.RemoveAll(tmp)
-	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", pt.Owner, pt.Repo)
-	cmd := gitAuthCmd(token, "clone", "--filter=blob:none", "--no-checkout", cloneURL, tmp)
+	auth := provider.GitAuth(pt, token)
+	cmd := gitAuthCmd(auth, "clone", "--filter=blob:none", "--no-checkout", provider.CloneURL(pt), tmp)
 	if out, err := runCtx(c.ctx, cmd); err != nil {
-		return "", fmt.Errorf("git clone %s: %w: %s", it.Repo, err, redactToken(strings.TrimSpace(string(out)), token))
+		return "", fmt.Errorf("git clone %s: %w: %s", it.Repo, err, auth.redact(strings.TrimSpace(string(out))))
 	}
 	os.RemoveAll(dest) // a broken earlier attempt
 	if err := os.Rename(tmp, dest); err != nil {

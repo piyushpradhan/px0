@@ -14,7 +14,9 @@ import { reloadWorkspace } from './agent.js';
 import { openFile } from './tabs.js';
 import { refreshTree } from './tree.js';
 import { layout, render } from './renderer.js';
-import { openSettings } from './settings.js';
+import { initPRMerge, refreshMergeStatus, reviewGate } from './prmerge.js';
+import { openForgeConnect } from './forgeconnect.js';
+import { on } from './bus.js';
 
 let meta = null;      // this session's PR info: {number, title, base, head, writeAccess, readOnly}
 let comments = [];    // draft comments known to the server
@@ -38,6 +40,9 @@ export function initPR() {
   wireBarButtons();
   wireCommentsPanel();
   renderBar();
+  initPRMerge({ meta: () => meta, onMerged: refreshPRMeta, onChange: renderBar });
+  // A token connected mid-review applies at once: re-read what it unlocks.
+  on('forge:connected', refreshPRMeta);
   refreshComments();
   refreshExistingComments();
 }
@@ -60,6 +65,7 @@ export async function refreshPRMeta() {
   }
   await refreshExistingComments();
   await refreshComments();
+  await refreshMergeStatus();
 }
 
 function fmtTime(iso) {
@@ -103,8 +109,12 @@ function renderBar() {
   if (!b || !meta) return;
   b.hidden = false;
   $('#pr-badge').textContent = '#' + meta.number;
+  const forge = forgeInfo();
   const link = $('#pr-link');
-  if (link) link.href = meta.url || '#';
+  if (link) {
+    link.href = meta.url || '#';
+    link.title = 'Open on ' + forge.label;
+  }
   const mb = $('#pr-merged-badge');
   if (mb) mb.hidden = !meta.merged;
   $('#pr-title').textContent = meta.title;
@@ -114,7 +124,11 @@ function renderBar() {
     ? (comments.length + (comments.length === 1 ? ' draft comment' : ' draft comments'))
     : '';
   const ro = $('#pr-readonly-note');
-  if (ro) ro.hidden = !meta.readOnly;
+  if (ro) {
+    ro.hidden = !meta.readOnly;
+    ro.textContent = `No ${forge.label} token — click to connect`;
+    ro.title = `${forge.tokenHint[0].toUpperCase()}${forge.tokenHint.slice(1)} -- or click to connect`;
+  }
   const dw = $('#pr-diff-warning');
   if (dw) {
     dw.hidden = !meta.diffBaseWarning;
@@ -125,24 +139,43 @@ function renderBar() {
     const hasApplicable = comments.some(c => c.path && c.line && c.body?.trim());
     batchBtn.hidden = !hasApplicable;
   }
+  // The verdict follows the branch: while the checkout is mid-rebase, or
+  // rebased but not pushed, the forge still holds the old commits, so a
+  // verdict now would land on code that is about to be replaced.
+  const gate = reviewGate();
   const reqBtn = $('#pr-submit-request-changes');
   const appBtn = $('#pr-submit-approve');
-  if (reqBtn) reqBtn.hidden = !meta.writeAccess;
-  if (appBtn) appBtn.hidden = !meta.writeAccess;
+  if (reqBtn) {
+    reqBtn.hidden = !meta.writeAccess;
+    reqBtn.disabled = !!gate.all;
+    reqBtn.title = gate.all || 'Request changes on this PR';
+  }
+  if (appBtn) {
+    appBtn.hidden = !meta.writeAccess;
+    appBtn.disabled = !!(gate.all || gate.approve);
+    appBtn.title = gate.all || gate.approve || gate.approveNote || 'Approve this PR';
+    appBtn.classList.toggle('pr-btn-caution', !!gate.approveNote);
+  }
   const cmtBtn = $('#pr-submit-comment');
   if (cmtBtn) {
-    cmtBtn.disabled = false;
-    cmtBtn.title = meta.readOnly
-      ? 'No GitHub token configured -- click to connect and submit'
-      : 'Submit review with drafts, without approval or change requests';
+    cmtBtn.disabled = !!gate.all;
+    cmtBtn.title = gate.all || (meta.readOnly
+      ? `No ${forge.label} token configured -- click to connect and submit`
+      : 'Submit review with drafts, without approval or change requests');
   }
   const composeEl = $('#pr-issue-compose');
   if (composeEl) composeEl.hidden = false;
 }
 
-export function nudgeGitHubToken() {
-  showToast('!', 'No GitHub token configured: set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login` -- or connect in Settings.', 5000);
-  openSettings('ui', 'GitHub', 'github.token');
+// The forge this workspace talks to (GitHub, GitLab, ...), as /api/meta
+// names it; GitHub when unknown, which is what px0 assumed before it knew more.
+export function forgeInfo() {
+  return S.meta?.forge?.info || { label: 'GitHub', tokenKey: 'github.token', tokenCategory: 'GitHub', tokenHint: 'set GITHUB_TOKEN, set GH_TOKEN, or run `gh auth login`' };
+}
+
+// Opens the Connect dialog; reason finishes "A <forge> token is needed ...".
+export function nudgeForgeToken(reason = '') {
+  openForgeConnect(typeof reason === 'string' ? reason : '');
 }
 
 function wireBarButtons() {
@@ -151,12 +184,12 @@ function wireBarButtons() {
   $('#pr-submit-request-changes')?.addEventListener('click', () => submitReview('REQUEST_CHANGES'));
   $('#pr-submit-approve')?.addEventListener('click', () => submitReview('APPROVE'));
   $('#pr-issue-compose-send')?.addEventListener('click', sendNewIssueComment);
-  $('#pr-readonly-note')?.addEventListener('click', nudgeGitHubToken);
+  $('#pr-readonly-note')?.addEventListener('click', nudgeForgeToken);
 }
 
 async function sendNewIssueComment() {
   if (meta?.readOnly) {
-    nudgeGitHubToken();
+    nudgeForgeToken('to post comments');
     return;
   }
   const ta = $('#pr-issue-compose-body');
@@ -252,7 +285,7 @@ async function pollPRBatch(id, count) {
 
 async function submitReview(event) {
   if (meta?.readOnly) {
-    nudgeGitHubToken();
+    nudgeForgeToken('to submit a review');
     return;
   }
   const bodyEl = $('#pr-review-body');
@@ -272,6 +305,7 @@ async function submitReview(event) {
     showToast('✓', event === 'APPROVE' ? 'Review approved'
       : event === 'REQUEST_CHANGES' ? 'Changes requested'
       : 'Review comment submitted');
+    refreshMergeStatus(); // an approval can be what branch protection was waiting for
   } catch (e) {
     showToast('!', e.message || 'Could not submit review');
   }
@@ -612,7 +646,7 @@ function wireCommentsPanel() {
 async function sendThreadReply(row) {
   if (!row) return;
   if (meta?.readOnly) {
-    nudgeGitHubToken();
+    nudgeForgeToken('to reply to comments');
     return;
   }
   const ta = row.querySelector('.reply-input');

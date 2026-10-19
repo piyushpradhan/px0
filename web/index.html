@@ -55,6 +55,19 @@
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <span>No GitHub token configured &mdash; add one</span>
         </button>
+        <div id="git-notice" class="git-notice" role="status" aria-live="polite" hidden>
+          <div class="git-notice-head">
+            <span id="git-notice-title" class="git-notice-title"></span>
+            <button id="git-notice-close" class="git-notice-close" type="button" title="Dismiss">&times;</button>
+          </div>
+          <div id="git-notice-text" class="git-notice-text"></div>
+          <div id="git-notice-agent" class="git-agent-picker" hidden>
+            <select id="git-sync-harness" class="agent-harness-select" title="Coding harness"></select>
+            <select id="git-sync-model" class="agent-model-select" title="Model"></select>
+          </div>
+          <div id="git-notice-actions" class="git-notice-actions"></div>
+          <details id="git-notice-log" class="git-notice-log" hidden><summary>Agent output</summary><pre></pre></details>
+        </div>
         <div id="git-commit-section" class="git-commit-section">
           <div class="git-agent-picker">
             <select id="git-harness" class="agent-harness-select" title="Coding harness"></select>
@@ -81,7 +94,7 @@
           <span>Working tree clean</span>
         </div>
         <div class="git-panel-actions git-sync-actions">
-          <button id="git-pull" class="footer-btn" title="Pull (fast-forward only; refuses on conflict)">Pull</button>
+          <button id="git-pull" class="footer-btn" title="Pull (fast-forward only; if the branches diverged, offers a rebase or merge by your coding harness)">Pull</button>
           <button id="git-push" class="footer-btn" title="No unpushed commits to push" disabled>Push</button>
         </div>
         <div id="git-recent-commits" class="git-recent-commits">
@@ -105,6 +118,9 @@
       <a class="mini" href="https://github.com/px0-ai/px0" target="_blank" rel="noopener" title="px0 on GitHub" aria-label="px0 on GitHub">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
+      <button class="mini" id="btn-help" title="Help & Tips" aria-label="Help & Tips">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </button>
       <button class="mini" id="btn-theme" title="Cycle theme (pick one: Command Palette > Select Theme)" aria-label="Cycle theme">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1" fill="currentColor"/><circle cx="17.5" cy="10.5" r="1" fill="currentColor"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor"/><circle cx="6.5" cy="12.5" r="1" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
       </button>
@@ -123,15 +139,16 @@
     <!-- PR review bar: shown only when this session is `px0 pr ...` (web/src/pr.js) -->
     <div id="pr-bar" class="pr-bar" hidden>
       <div class="pr-bar-row">
-        <a id="pr-link" class="pr-link" target="_blank" rel="noopener noreferrer" title="Open on GitHub">
+        <a id="pr-link" class="pr-link" target="_blank" rel="noopener noreferrer" >
           <span id="pr-badge" class="pr-badge"></span>
           <span id="pr-title" class="pr-title"></span>
         </a>
         <span id="pr-merged-badge" class="pr-merged-badge" hidden>Merged</span>
         <span id="pr-refs" class="pr-refs"></span>
+        <button id="pr-merge-state" class="pr-merge-state" type="button" hidden></button>
         <span class="grow"></span>
         <span id="pr-diff-warning" class="pr-diff-warning" hidden>&#9888; diff base unresolved</span>
-        <button id="pr-readonly-note" class="pr-readonly-note" type="button" hidden title="Set GITHUB_TOKEN, set GH_TOKEN, or run 'gh auth login' -- or click to connect">No GitHub token &mdash; click to connect</button>
+        <button id="pr-readonly-note" class="pr-readonly-note" type="button" hidden >No token &mdash; click to connect</button>
         <span id="pr-draft-count" class="pr-draft-count"></span>
       </div>
       <div class="pr-bar-row pr-review-row">
@@ -143,6 +160,12 @@
         <button id="pr-submit-comment" class="footer-btn pr-btn-neutral" title="Submit review with drafts, without approval or change requests">Submit Review</button>
         <button id="pr-submit-request-changes" class="footer-btn pr-btn-request-changes" hidden title="Request changes on this PR">Request Changes</button>
         <button id="pr-submit-approve" class="footer-btn pr-btn-approve" hidden title="Approve this PR">Approve</button>
+        <!-- Merge: split button -- the last-used method, and a caret to pick another (web/src/prmerge.js) -->
+        <div id="pr-merge-group" class="pr-merge-group" hidden>
+          <button id="pr-merge" class="footer-btn pr-btn-merge" type="button">Squash and merge</button>
+          <button id="pr-merge-caret" class="footer-btn pr-btn-merge pr-merge-caret" type="button" aria-haspopup="menu" title="Choose how to merge">&#9662;</button>
+          <div id="pr-merge-menu" class="pr-merge-menu" role="menu" hidden></div>
+        </div>
       </div>
     </div>
     <!-- File Tabs -->
@@ -359,6 +382,31 @@
     <!-- LSP management menu, opened from LSP status bar button -->
     <div id="lsp-menu" role="menu" hidden></div>
 
+    <!-- Floating Async Tip Widget (web/src/tips.js) -->
+    <div id="tip-widget" class="tip-widget" hidden>
+      <div class="tip-widget-head">
+        <div class="tip-widget-tag-group">
+          <svg class="tip-widget-bulb" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/></svg>
+          <span class="tip-widget-label">Tip</span>
+          <button id="tip-widget-tag" class="tip-tag-pill" type="button" title="Filter tips by this category"></button>
+          <span id="tip-widget-count" class="tip-count-chip"></span>
+        </div>
+        <button id="tip-widget-close" class="tip-btn-close" type="button" title="Dismiss tip">&times;</button>
+      </div>
+      <div class="tip-widget-body">
+        <h4 id="tip-widget-title" class="tip-widget-title"></h4>
+        <div id="tip-widget-content" class="tip-widget-content"></div>
+      </div>
+      <div class="tip-widget-foot">
+        <button id="tip-widget-hide-perm" class="tip-btn-link" type="button" title="Permanently hide tips in the interface">Don't show tips</button>
+        <div class="tip-widget-actions">
+          <button id="tip-widget-prev" class="tip-btn-nav" type="button" title="Previous tip">&lsaquo;</button>
+          <button id="tip-widget-next" class="tip-btn-nav" type="button" title="Next tip">&rsaquo;</button>
+          <button id="tip-widget-all" class="tip-btn-all" type="button" title="View all tips in IDE">All Tips</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Bottom Status Bar -->
     <footer id="status">
       <!-- Selection actions: replace the buttons and size below while code is selected -->
@@ -414,6 +462,7 @@
         <button class="inspector-tab" data-itab="symbols" title="View file symbols outline">Symbols</button>
         <button class="inspector-tab" data-itab="calls" title="Trace callers and callees ({Alt+Shift+H})">Calls</button>
         <button class="inspector-tab" data-itab="search" title="Search text across workspace ({Mod+Shift+F})">Search</button>
+        <button class="inspector-tab" data-itab="tips" id="tab-tips" title="Tips & Tricks">Tips</button>
       </div>
       <div class="inspector-head-actions">
         <button id="btn-close-right" class="mini" title="Close inspector (Esc)">&#10005;</button>
@@ -539,6 +588,25 @@
         </div>
       </div>
     </section>
+
+    <!-- Right Pane 6: Tips & Tricks. Browse, search and filter all px0 tips. web/src/tips.js owns it. -->
+    <section class="inspector-pane" id="pane-right-tips">
+      <div class="inspector-bar tips-header-bar">
+        <div class="tips-search-wrap">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="tips-filter" placeholder="Filter tips..." autocomplete="off" spellcheck="false">
+        </div>
+        <span id="tips-count-badge" class="inspector-badge">0 tips</span>
+        <button id="btn-refresh-tips" class="mini" title="Reload tips from px0.ai">&#x21bb;</button>
+      </div>
+      <div class="tips-toolbar-sub">
+        <label class="tips-setting-toggle" title="Toggle automatic tip popups in interface">
+          <input type="checkbox" id="tips-toggle-popup" checked>
+          <span>Show tip popups in interface</span>
+        </label>
+      </div>
+      <div class="panel-body" id="tips-list"></div>
+    </section>
   </aside>
 </div>
 
@@ -556,6 +624,78 @@
 <div id="vim-helpsheet" hidden></div>
 
 <!-- SECTION: Settings Modal (Cmd+, / Ctrl+,) -->
+<!-- PR merge dialog: method, commit title/message (rewritable by the harness), and what blocks merging now (web/src/prmerge.js) -->
+<div id="pr-merge-modal" class="modal-overlay" hidden>
+  <div class="pr-merge-dialog" role="dialog" aria-modal="true" aria-labelledby="pr-merge-title">
+    <header class="pr-merge-head">
+      <div class="pr-merge-head-text">
+        <h2 id="pr-merge-title">Merge pull request</h2>
+        <span id="pr-merge-refs" class="pr-merge-refs"></span>
+      </div>
+      <button id="pr-merge-close" class="git-notice-close" type="button" title="Close (Esc)">&times;</button>
+    </header>
+    <div id="pr-merge-methods" class="pr-merge-methods" role="radiogroup" aria-label="Merge method"></div>
+    <p id="pr-merge-explain" class="pr-merge-explain"></p>
+    <div id="pr-merge-warnings" class="pr-merge-warnings"></div>
+    <div id="pr-merge-commit" class="pr-merge-commit">
+      <label class="pr-merge-label" for="pr-merge-commit-title">Commit title</label>
+      <input id="pr-merge-commit-title" class="pr-merge-input" type="text" spellcheck="false" autocomplete="off">
+      <div class="pr-merge-label-row">
+        <label class="pr-merge-label" for="pr-merge-commit-body">Commit message</label>
+        <a id="pr-merge-reset" href="#" class="pr-merge-link">Reset to default</a>
+      </div>
+      <textarea id="pr-merge-commit-body" class="pr-merge-input pr-merge-body" rows="8" spellcheck="false" autocomplete="off"></textarea>
+      <div id="pr-merge-ai-row" class="pr-merge-ai">
+        <input id="pr-merge-ai-instruction" class="pr-merge-input" type="text" spellcheck="false" autocomplete="off" placeholder="Instructions for this rewrite (optional), e.g. Conventional Commits, mention the ticket">
+        <div class="git-agent-picker">
+          <select id="pr-merge-harness" class="agent-harness-select" title="Coding harness"></select>
+          <select id="pr-merge-model" class="agent-model-select" title="Model"></select>
+        </div>
+        <button id="pr-merge-ai" class="footer-btn" type="button" title="Have the harness rewrite the title and message from the PR's commits and diff">Rewrite with AI</button>
+      </div>
+      <span id="pr-merge-instructions-note" class="pr-merge-note" hidden>Your <a id="pr-merge-instructions-link" href="#" class="pr-merge-link">commit message instructions</a> from Settings apply too.</span>
+    </div>
+    <ol id="pr-merge-commit-list" class="pr-merge-commit-list" hidden></ol>
+    <div id="pr-merge-err" class="agent-err" hidden></div>
+    <footer class="pr-merge-foot">
+      <span id="pr-merge-hint" class="agent-hint"></span>
+      <button id="pr-merge-cancel" class="footer-btn" type="button">Cancel</button>
+      <button id="pr-merge-confirm" class="footer-btn pr-btn-merge" type="button">Confirm merge</button>
+    </footer>
+  </div>
+</div>
+
+<!-- Connect dialog: create, paste and check a forge token without a restart (web/src/forgeconnect.js) -->
+<div id="forge-connect-modal" class="modal-overlay" hidden>
+  <div class="pr-merge-dialog forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-connect-title">
+    <header class="pr-merge-head">
+      <div class="pr-merge-head-text">
+        <h2 id="forge-connect-title">Connect</h2>
+        <span id="forge-connect-host" class="pr-merge-refs"></span>
+      </div>
+      <button id="forge-connect-close" class="git-notice-close" type="button" title="Close (Esc)">&times;</button>
+    </header>
+    <p id="forge-connect-why" class="pr-merge-explain"></p>
+    <ol id="forge-connect-steps" class="forge-connect-steps"></ol>
+    <label class="pr-merge-label" for="forge-connect-token">Token</label>
+    <input id="forge-connect-token" class="pr-merge-input" type="password" spellcheck="false" autocomplete="off" placeholder="Paste the token">
+    <div id="forge-connect-extra" class="forge-connect-extra" hidden>
+      <label id="forge-connect-extra-label" class="pr-merge-label" for="forge-connect-extra-input"></label>
+      <input id="forge-connect-extra-input" class="pr-merge-input" type="text" spellcheck="false" autocomplete="off">
+      <span id="forge-connect-extra-hint" class="pr-merge-note"></span>
+    </div>
+    <div id="forge-connect-err" class="agent-err" hidden></div>
+    <span id="forge-connect-check" class="pr-merge-note"></span>
+    <span id="forge-connect-alt" class="pr-merge-note"></span>
+    <footer class="pr-merge-foot">
+      <a id="forge-connect-settings" href="#" class="pr-merge-link">Open Settings</a>
+      <span id="forge-connect-hint" class="agent-hint"></span>
+      <button id="forge-connect-cancel" class="footer-btn" type="button">Cancel</button>
+      <button id="forge-connect-submit" class="footer-btn pr-btn-merge" type="button">Connect</button>
+    </footer>
+  </div>
+</div>
+
 <div id="settings-modal" class="modal-overlay" hidden>
   <div class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <header class="settings-header">

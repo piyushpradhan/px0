@@ -1032,6 +1032,46 @@ func TestGitFFOnlyPull(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(cloneB, "f.txt")); err != nil || string(got) != "two\n" {
 		t.Fatalf("expected cloneB's f.txt untouched by the refused pull, got %q, err=%v", got, err)
 	}
+
+	// The refused pull's fetch already landed, so the sync state the panel
+	// offers a rebase/merge from counts the incoming commit.
+	st := (&Server{}).gitSyncState(cloneB)
+	if st.Branch != "main" || st.Upstream != "origin/main" || st.Ahead != 1 || st.Behind != 1 || st.InProgress != "" || st.Dirty {
+		t.Fatalf("unexpected sync state after a diverged pull: %+v", st)
+	}
+	if p := gitSyncPrompt("rebase", st); !strings.Contains(p, "can't fast-forward onto origin/main") || !strings.Contains(p, "Run rebase") || !strings.Contains(p, "do not push") {
+		t.Fatalf("rebase prompt is missing the situation or the no-push rule:\n%s", p)
+	}
+
+	// A local edit to the same line as the incoming one stops a rebase on a
+	// conflict: that half-done rebase must be recognized (with its branch,
+	// though HEAD is detached) and abortable back to where it started.
+	if err := os.WriteFile(filepath.Join(cloneB, "f.txt"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, cloneB, "commit", "-aqm", "local edit")
+	before := strings.TrimSpace(gitTestRun(t, cloneB, "rev-parse", "HEAD"))
+	if out, err := exec.Command("git", "-C", cloneB, "rebase", "origin/main").CombinedOutput(); err == nil {
+		t.Fatalf("expected the rebase to stop on a conflict:\n%s", out)
+	}
+	if op := gitOpInProgress(cloneB); op != "rebase" {
+		t.Fatalf("gitOpInProgress = %q, want rebase", op)
+	}
+	if st := (&Server{}).gitSyncState(cloneB); st.Branch != "main" || st.Upstream != "origin/main" || st.Code != "in-progress" {
+		t.Fatalf("unexpected sync state mid-rebase: %+v", st)
+	}
+	if err := gitAbortOp(cloneB); err != nil {
+		t.Fatalf("gitAbortOp: %v", err)
+	}
+	if op := gitOpInProgress(cloneB); op != "" {
+		t.Fatalf("expected no operation in progress after abort, got %q", op)
+	}
+	if after := strings.TrimSpace(gitTestRun(t, cloneB, "rev-parse", "HEAD")); after != before {
+		t.Fatalf("abort should restore HEAD to %s, got %s", before, after)
+	}
+	if err := gitAbortOp(cloneB); err == nil {
+		t.Fatal("expected gitAbortOp to refuse when nothing is in progress")
+	}
 }
 
 func TestGitRecentCommitsAndLog(t *testing.T) {

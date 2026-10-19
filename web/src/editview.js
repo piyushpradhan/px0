@@ -2,9 +2,10 @@
 import { $, S, doc_, apiPostJson, LH } from './state.js';
 import { vp, showToast, flashActionSuccess } from './ui.js';
 import { drawTabs, loadGutter, reloadOpenTabs } from './tabs.js';
-import { syncPreview } from './markdown.js';
+import { syncPreview, previewing, previewTopLine, previewKind } from './markdown.js';
 import { syncDiffView } from './diff.js';
 import { triggerRefresh } from './gitstream.js';
+import { updateStatus } from './status.js';
 
 export const editViewEl = $('#editview');
 export const editGutterEl = $('#editview-gutter');
@@ -75,6 +76,31 @@ function loadEditContent(d) {
   if (editGutterEl) editGutterEl.scrollTop = editTextarea.scrollTop;
 }
 
+// The textarea's line height follows the --lh setting, not LH.
+function editLH() {
+  return parseFloat(getComputedStyle(editTextarea).lineHeight) || LH;
+}
+
+// Top of line n in the textarea. Wrapped lines are taller than one line;
+// their gutter rows were sized to match, so read the offset from there.
+function editLineTop(n) {
+  const row = S.wrap && editGutterEl?.children[n - 1];
+  return row ? row.offsetTop : (n - 1) * editLH();
+}
+
+// The first line visible at the top of the textarea.
+function editTopLine() {
+  const top = editTextarea.scrollTop;
+  const rows = S.wrap && editGutterEl ? editGutterEl.children : null;
+  if (rows && rows.length) {
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].offsetTop + rows[i].offsetHeight > top + 1) return i + 1;
+    }
+    return rows.length;
+  }
+  return Math.floor(top / editLH()) + 1;
+}
+
 export function syncEditUI() {
   const d = doc_();
   if (!editSwitch) return;
@@ -141,16 +167,21 @@ export async function enterEditMode(line) {
     }
   }
 
+  // The preview's own cursor is not d.cur: start editing where the preview is.
+  const from = line || (previewing(d) ? previewTopLine() : d.cur) || 1;
+
   d.isEditing = true;
   d.editContent = text;
   document.body.classList.add('editing-file');
   syncEditUI();
+  syncPreview(); // hides the preview through markdown.js so it redraws on exit
+  updateStatus();
 
   editTextarea.value = text;
   loadedDoc = d;
   updateGutter();
 
-  const targetLine = line || d.cur || 1;
+  const targetLine = from;
   const lines = text.split('\n');
   let charOffset = 0;
   for (let i = 0; i < targetLine - 1 && i < lines.length; i++) {
@@ -159,8 +190,7 @@ export async function enterEditMode(line) {
 
   editTextarea.focus();
   editTextarea.setSelectionRange(charOffset, charOffset);
-  const lh = LH || 20;
-  editTextarea.scrollTop = Math.max(0, (targetLine - 5) * lh);
+  editTextarea.scrollTop = Math.max(0, editLineTop(Math.max(1, targetLine - 4)));
   if (editGutterEl) editGutterEl.scrollTop = editTextarea.scrollTop;
 }
 
@@ -177,17 +207,22 @@ export async function exitEditMode(force = false) {
     drawTabs();
   }
 
+  // Come back to the line that was at the top of the editor, in source or preview.
+  const top = Math.min(editTopLine(), d.total || 1);
   d.isEditing = false;
   document.body.classList.remove('editing-file');
   syncEditUI();
 
-  if (d.markdown && S.mdPreview) {
-    syncPreview();
-  } else if (d.diffMode) {
+  if (d.diffMode) {
     syncDiffView();
-  } else {
-    await reloadOpenTabs({ onlyIfChanged: false });
+    return;
   }
+  d.cur = top;
+  vp.scrollTop = (top - 1) * LH;
+  if (previewKind(d)) d.mdLine = top;
+  // Reloads the source and, through a fresh doc, the preview: a save made in
+  // edit mode leaves both stale.
+  await reloadOpenTabs({ onlyIfChanged: false });
 }
 
 export async function saveActiveFile() {

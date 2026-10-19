@@ -53,7 +53,7 @@ If the child is not running, a GET of the workspace page itself (`/w/<id>/`) sta
 
 ## Item IDs
 
-`wbItemID` is the first 6 bytes, as hex, of the SHA-256 of the kind plus a key: the cleaned absolute path for a directory, or the lowercased `provider/owner/repo#n` for a pull request. The ID is stable, so `/w/<id>/` is stable, and so is the session file keyed on the base path (`sessionFilePath`). That file holds the PR review drafts, so they survive a reopen even though each opening checks the PR out into a new temporary directory.
+`wbItemID` is the first 6 bytes, as hex, of the SHA-256 of the kind plus a key: the cleaned absolute path for a directory, or the lowercased `provider/owner/repo#n` for a pull request. The ID is stable, so `/w/<id>/` is stable. A PR's review drafts are saved in a session file named after the same ID (`prSessionFilePath`), so they survive a reopen, from the workbench or from `px0 <pr-url>`, even though each opening checks the PR out into a new temporary directory.
 
 ## Store
 

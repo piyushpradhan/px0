@@ -33,9 +33,16 @@ type settings struct {
 	TablePreviewOpen            *bool    `json:"table.preview.open,omitempty"`
 	TelemetryEnabled            *bool    `json:"telemetry.enabled,omitempty"`
 	GitHubToken                 *string  `json:"github.token,omitempty"`
+	GitLabToken                 *string  `json:"gitlab.token,omitempty"`
+	GitLabHost                  *string  `json:"gitlab.host,omitempty"`
+	GiteaToken                  *string  `json:"gitea.token,omitempty"`
+	GiteaHost                   *string  `json:"gitea.host,omitempty"`
+	BitbucketToken              *string  `json:"bitbucket.token,omitempty"`
+	BitbucketEmail              *string  `json:"bitbucket.email,omitempty"`
 	GitCommitMessageInstruction *string  `json:"git.commitMessageInstruction,omitempty"`
 	ServerBasePath              *string  `json:"server.basePath,omitempty"`
 	ExplorerAutoReveal          *bool    `json:"explorer.autoReveal,omitempty"`
+	TipsEnabled                 *bool    `json:"tips.enabled,omitempty"`
 }
 
 var settingsMu sync.Mutex
@@ -363,12 +370,71 @@ var settingsSchema = []settingSchemaItem{
 		Secret:      true,
 	},
 	{
+		Key:         "gitlab.token",
+		Title:       "GitLab Token",
+		Description: "Personal access token (api scope) used to check out, review and merge GitLab merge requests, on gitlab.com or a self-hosted instance. Sent only to the GitLab Host below; other self-hosted instances use the token 'glab auth login' stored for them. Takes precedence over the GITLAB_TOKEN environment variable.",
+		Category:    "GitLab",
+		Type:        "string",
+		Default:     "",
+		Secret:      true,
+	},
+	{
+		Key:         "gitlab.host",
+		Title:       "GitLab Host",
+		Description: "The GitLab instance the GitLab token belongs to (e.g. gitlab.example.com). Merge requests on any other host are opened without it. Falls back to GITLAB_HOST, then gitlab.com.",
+		Category:    "GitLab",
+		Type:        "string",
+		Default:     "",
+	},
+	{
+		Key:         "gitea.token",
+		Title:       "Gitea Token",
+		Description: "Access token (repository and issue read/write scopes) for Gitea, Forgejo or Codeberg pull request review. Sent only to the Gitea Host below. Takes precedence over the GITEA_TOKEN environment variable.",
+		Category:    "Gitea",
+		Type:        "string",
+		Default:     "",
+		Secret:      true,
+	},
+	{
+		Key:         "gitea.host",
+		Title:       "Gitea Host",
+		Description: "The Gitea or Forgejo instance the Gitea token belongs to (e.g. gitea.example.com). Pull requests on any other host are opened without it. Falls back to GITEA_HOST, then codeberg.org.",
+		Category:    "Gitea",
+		Type:        "string",
+		Default:     "",
+	},
+	{
+		Key:         "bitbucket.token",
+		Title:       "Bitbucket Token",
+		Description: "Bitbucket Cloud token for pull request review: a repository, project or workspace access token, or an Atlassian API token (then also set Bitbucket Email). Takes precedence over the BITBUCKET_TOKEN environment variable.",
+		Category:    "Bitbucket",
+		Type:        "string",
+		Default:     "",
+		Secret:      true,
+	},
+	{
+		Key:         "bitbucket.email",
+		Title:       "Bitbucket Email",
+		Description: "The Atlassian account email an API token belongs to. Leave empty when Bitbucket Token is an access token. Falls back to BITBUCKET_EMAIL. Checking push access (and so Approve and Merge) needs an API token.",
+		Category:    "Bitbucket",
+		Type:        "string",
+		Default:     "",
+	},
+	{
 		Key:         "server.basePath",
 		Title:       "Base Path",
 		Description: "Base URL path prefix for the px0 server and web interface (e.g. /rev-123/).",
 		Category:    "Server",
 		Type:        "string",
 		Default:     "/",
+	},
+	{
+		Key:         "tips.enabled",
+		Title:       "Show Tips in Interface",
+		Description: "Controls whether px0 periodically shows helpful tips and tricks in the interface.",
+		Category:    "General",
+		Type:        "boolean",
+		Default:     true,
 	},
 }
 

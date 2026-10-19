@@ -125,3 +125,63 @@ func TestPRDraftSessionPersistence(t *testing.T) {
 		t.Errorf("unexpected restored comment: %+v", pr2.comments[0])
 	}
 }
+
+func postDraft(t *testing.T, s *Server, prefix, body string) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"path": "main.go", "line": 25, "side": "RIGHT", "body": body})
+	req := httptest.NewRequest(http.MethodPost, prefix+"/api/pr/comments", bytes.NewReader(b))
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1:7777")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST %s/api/pr/comments failed: code %d, body %s", prefix, rec.Code, rec.Body.String())
+	}
+}
+
+// A direct `px0 <pr-url>` run has no base path and checks out into a new
+// temporary directory each time; drafts must still come back.
+func TestPRDraftsSurviveNewCheckoutRoot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	pt := PRTarget{Provider: "github", Owner: "acme", Repo: "widget", Number: 7}
+
+	s := NewServer(NewIndex(t.TempDir()), nil)
+	s.SetPR(&prSession{diffBase: "HEAD", target: pt})
+	postDraft(t, s, "", "first run")
+
+	s2 := NewServer(NewIndex(t.TempDir()), nil)
+	pr2 := &prSession{diffBase: "HEAD", target: pt}
+	s2.SetPR(pr2)
+	if len(pr2.comments) != 1 || pr2.comments[0].Body != "first run" {
+		t.Fatalf("expected the draft from the earlier run, got %+v", pr2.comments)
+	}
+
+	other := &prSession{diffBase: "HEAD", target: PRTarget{Provider: "github", Owner: "acme", Repo: "widget", Number: 8}}
+	NewServer(NewIndex(t.TempDir()), nil).SetPR(other)
+	if len(other.comments) != 0 {
+		t.Fatalf("another PR must not see these drafts, got %+v", other.comments)
+	}
+}
+
+// Drafts an older px0 saved under the base-path file move to the PR's file.
+func TestPRDraftsMigrateFromBasePathFile(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	newSessionManager("/w/abc/", root).Update(func(ws *WorkspaceSession) {
+		ws.Drafts = []prComment{{ID: 3, Path: "a.go", Line: 1, Side: "RIGHT", Body: "old"}}
+	})
+
+	pt := PRTarget{Provider: "github", Owner: "acme", Repo: "widget", Number: 7}
+	pr := &prSession{diffBase: "HEAD", target: pt}
+	NewServer(NewIndex(root), nil, "/w/abc/").SetPR(pr)
+	if len(pr.comments) != 1 || pr.comments[0].Body != "old" || pr.nextID != 3 {
+		t.Fatalf("expected the migrated draft, got %+v (nextID %d)", pr.comments, pr.nextID)
+	}
+	if got := newPRSessionManager(pt).Get().Drafts; len(got) != 1 {
+		t.Fatalf("expected the draft in the PR session file, got %+v", got)
+	}
+	if got := newSessionManager("/w/abc/", root).Get().Drafts; len(got) != 0 {
+		t.Fatalf("expected the base-path file's drafts cleared, got %+v", got)
+	}
+}

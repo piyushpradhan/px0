@@ -15,6 +15,8 @@ Detailed walkthroughs of all px0 features, capabilities, developer workflows, an
 - **[Workspace Text & Regex Search](features/workspace-search.md)**: Full-repository pattern matching and symbol exploration (`Cmd/Ctrl+Shift+F`).
 - **[Symbol Outline & Navigation](features/symbol-outline.md)**: In-file structural symbol trees with LSP and regex fallbacks (`Cmd/Ctrl+Shift+O`).
 - **[In-File Find & Caret Navigation](features/in-file-search.md)**: Active document search (`Cmd/Ctrl+F`), line jumps (`Cmd/Ctrl+G`), and caret motion.
+- **[Getting Started with Pull Request Review](features/pr-review-getting-started.md)**: Open, connect, review, resolve and merge your first PR on GitHub, GitLab, Gitea/Forgejo or Bitbucket.
+- **[Pull Request Review](features/github-pr-review.md)**: Full-tree PR checkout, merge-base diffs, review verdicts, AI conflict resolution and merging, across four forges (`px0 <pr-url>`).
 - **[Git Awareness & Visual Diff Viewer](features/git-integration.md)**: Status badges, dirty ancestor trees, gutter markers, and side-by-side / unified diffs (`Cmd/Ctrl+D`).
 - **[Direct File Editing & Creation](features/file-editing.md)**: In-browser edit and save (`Cmd/Ctrl+E`, `Cmd/Ctrl+S`), new files and folders.
 - **[Editing with Coding Agents](features/agent-editing.md)**: Delegating code changes to Claude Code, Gemini CLI, Cursor Agent, Antigravity, OpenCode, Codex, Aider, and Goose.
@@ -40,6 +42,7 @@ In-depth technical write-ups covering px0's Go server runtime, concurrency pipel
 - **[Windowed Syntax Highlighting](internals/syntax-highlighting.md)**
 - **[Language Server Protocol Architecture](internals/lsp-and-intelligence.md)**
 - **[Git Awareness & Porcelain Diffing](internals/git-integration.md)**
+- **[Pull Request Review & Forge Providers](internals/github-pr-review.md)**
 - **[Direct File Editing & Creation](internals/file-editing.md)**
 - **[Harness Editing & Agent Dispatch](internals/agent-editing.md)**
 - **[Editor Virtualization & Caret Engine](internals/editor-virtualization.md)**

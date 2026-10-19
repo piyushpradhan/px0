@@ -931,6 +931,98 @@ func commitMessagePrompt(files []string, stat, diff, instruction string) string 
 	return b.String()
 }
 
+// gitSyncPrompt asks the harness to rebase (or merge) the current branch
+// onto its upstream after a fast-forward-only pull was refused, or to finish
+// one a previous attempt left half-done. It may run git and edit conflicted
+// files, but must never push: what reaches the remote stays the user's call.
+func gitSyncPrompt(strategy string, st gitSyncState) string {
+	// A PR's base is fetched by px0 itself, with the forge token, into a ref
+	// of its own; the harness works against that ref and must not fetch.
+	onto, prefetched := st.Upstream, st.ontoRef != ""
+	if prefetched {
+		onto = st.ontoRef
+	}
+	remote, _, _ := strings.Cut(st.Upstream, "/")
+	var b strings.Builder
+	switch {
+	case st.InProgress != "":
+		fmt.Fprintf(&b, "A git %s of branch %s onto %s is in progress and stopped, most likely on conflicts. Finish it.\n\n", strategy, st.Branch, onto)
+	case st.PR > 0:
+		fmt.Fprintf(&b, "Pull request #%d (branch %s, checked out here as a detached HEAD) is out of date with its base branch %s: %d commit(s) on the PR, %d new on %s since it branched. Bring it up to date by running %s against %s, which holds %s's latest commits.\n\n", st.PR, st.Branch, st.Upstream, st.Ahead, st.Behind, st.Upstream, strategy, onto, st.Upstream)
+	default:
+		fmt.Fprintf(&b, "git pull is failing on branch %s: it can't fast-forward onto %s (%d local commit(s) not upstream, %d incoming). Run %s.\n\n", st.Branch, st.Upstream, st.Ahead, st.Behind, strategy)
+	}
+	b.WriteString("Steps:\n")
+	if strategy == "rebase" {
+		switch {
+		case st.InProgress != "":
+			b.WriteString("1. Run git status to see where the rebase stopped.\n")
+		case prefetched:
+			fmt.Fprintf(&b, "1. git rebase %s (already fetched: do not run git fetch or git pull).\n", onto)
+		default:
+			fmt.Fprintf(&b, "1. git fetch %s, then git rebase %s.\n", remote, st.Upstream)
+		}
+		b.WriteString("2. For each conflict, read both sides and resolve it so the intent of both the local and the incoming change survives. Remove every conflict marker, git add the files, and run GIT_EDITOR=true git rebase --continue. Repeat until the rebase completes.\n")
+		b.WriteString("3. Never use git rebase --skip: it silently drops a local commit.\n")
+	} else {
+		switch {
+		case st.InProgress != "":
+			b.WriteString("1. Run git status to see which files are still conflicted.\n")
+		case prefetched:
+			fmt.Fprintf(&b, "1. git merge --no-edit -m \"Merge branch '%s' into %s\" %s (already fetched: do not run git fetch or git pull).\n", st.Upstream, st.Branch, onto)
+		default:
+			fmt.Fprintf(&b, "1. git fetch %s, then git merge --no-edit %s.\n", remote, st.Upstream)
+		}
+		b.WriteString("2. For each conflict, read both sides and resolve it so the intent of both the local and the incoming change survives. Remove every conflict marker, git add the files, and run git commit --no-edit to conclude the merge.\n")
+	}
+	fmt.Fprintf(&b, "\nRules: do not push or force-push. Do not reset, amend, or rewrite commits beyond what the %s itself does. Do not touch files that are not part of a conflict.\n", strategy)
+	fmt.Fprintf(&b, "If a conflict cannot be resolved with confidence, run git %s --abort so the branch is back where it started, and say which files and why.\n", strategy)
+	b.WriteString("Finish with a short summary: the conflicts you resolved (file and how), or that there were none.\n")
+	return b.String()
+}
+
+// mergeMessagePrompt asks the harness for the commit message a squash (or a
+// merge commit) of a PR lands on its base branch with. Like
+// commitMessagePrompt it only writes text: no files, no git. draft is the
+// message as it stands in the merge dialog, rewritten rather than ignored.
+// commits is newest first.
+func mergeMessagePrompt(method string, meta PRMeta, commits []UnpushedCommit, stat, diff, draft string, instructions []string) string {
+	var b strings.Builder
+	if method == MergeMethodSquash {
+		fmt.Fprintf(&b, "Write the commit message for squash-merging pull request #%d (%q) into %s: its %d commit(s) become this one commit.\n", meta.Number, meta.Title, meta.BaseRef, len(commits))
+		b.WriteString("Rules: imperative mood, a concise summary line under 72 characters, a blank line, then a body explaining why the change was made and what it does overall. Describe the end result, not the PR's history: leave out fixups, review rounds and reverted attempts.\n")
+	} else {
+		fmt.Fprintf(&b, "Write the merge commit message for merging pull request #%d (%q) from %s into %s.\n", meta.Number, meta.Title, meta.HeadRef, meta.BaseRef)
+		b.WriteString("Rules: a concise summary line under 72 characters naming what the merge brings in, a blank line, then a short body summarizing the change.\n")
+	}
+	b.WriteString("Output ONLY the commit message text -- no markdown code fences, no preamble, no explanation afterwards, and do not edit any files or run git.\n")
+	for _, in := range instructions {
+		fmt.Fprintf(&b, "\nAdditional instructions from the user: %s\n", in)
+	}
+	if draft != "" {
+		b.WriteString("\nThe current message, which you are rewriting (keep what is accurate and useful):\n")
+		b.WriteString(draft)
+		b.WriteString("\n")
+	}
+	if len(commits) > 0 {
+		fmt.Fprintf(&b, "\nCommits on the PR (%d, oldest first):\n", len(commits))
+		for i := len(commits) - 1; i >= 0; i-- {
+			fmt.Fprintf(&b, "- %s\n", commits[i].Subject)
+		}
+	}
+	if strings.TrimSpace(stat) != "" {
+		b.WriteString("\nSummary of changes (diffstat):\n")
+		b.WriteString(stat)
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(diff) != "" {
+		b.WriteString("\nDiff:\n")
+		b.WriteString(diff)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // ---------------------------------------------------------------- HTTP
 
 func (s *Server) agentOrFail(w http.ResponseWriter) bool {

@@ -156,7 +156,7 @@ export const LH = 20, CHUNK = 1000, OVERSCAN = 24;
  * @property {boolean} [ready]
  * @property {any} [metrics]
  * @property {any} [pr]
- * @property {boolean} [githubToken]
+ * @property {{info: {name: string, label: string, tokenKey: string, tokenCategory: string, tokenHint: string}, hasToken: boolean}|null} [forge]
  * @property {any} [agents]
  * @property {string} [agent]
  * @property {string} [agentModel]

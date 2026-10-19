@@ -47,13 +47,29 @@ To keep iteration fast and avoid unnecessary delays:
 
 ---
 
-## 4. Documentation Policy
+## 4. Documentation & Tips Policy
 
 - **During Iterative Work**: Focus on completing code changes first before running verifications. Do not block your workflow with premature documentation edits.
 - **On Feature Completion**: If you introduce a new feature, CLI flag, shortcut, or major architectural change, update the corresponding documentation:
   - CLI flags / Shortcuts -> [`README.md`](README.md)
   - Major architectural patterns -> [`docs/internals/`](docs/internals/)
   - User features -> [`docs/features/`](docs/features/)
+- **Keeping Tips & Tricks Updated**: Whenever rolling out an important user-facing feature, shortcut, command, or workflow improvement:
+  - Add a concise, helpful tip entry to both:
+    1. [`../web/public/tips.json`](../web/public/tips.json): Served publicly at `https://px0.ai/tips.json`.
+    2. [`web/src/tips-util.js`](web/src/tips-util.js): Built-in offline fallback in `DEFAULT_TIPS`.
+  - Tips use the standard schema:
+    ```json
+    {
+      "id": "feature-slug",
+      "title": "Concise Feature Title",
+      "category": "Navigation | Git | AI | Editing | Viewer | Workbench | Performance",
+      "tag": "TagPill",
+      "content": "One to two sentences explaining the feature with **bold**, `code`, or <kbd> tags.",
+      "shortcut": "Mod+Key" // optional
+    }
+    ```
+  - Rebundle frontend assets via `make web` (`npm run build`) and run `npm run check`.
 
 ---
 

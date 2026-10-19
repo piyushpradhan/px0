@@ -71,6 +71,22 @@ type Server struct {
 	workbenchURL string // the workbench's base path, when this px0 is one of its workspaces
 
 	lastReq atomic.Int64 // unix nanos of the most recent request
+
+	// streamsDone closes when the HTTP server starts shutting down, so event
+	// streams end their responses cleanly instead of being cut when we exit.
+	streamsDone chan struct{}
+	endStreams  sync.Once
+}
+
+// EndStreams ends every open event stream. Register it with
+// http.Server.RegisterOnShutdown: Shutdown does not cancel request contexts,
+// so streams would otherwise hold it up until its deadline.
+func (s *Server) EndStreams() {
+	s.endStreams.Do(func() {
+		if s.streamsDone != nil {
+			close(s.streamsDone)
+		}
+	})
 }
 
 // BasePath returns the URL path prefix configured for this server (e.g. "/" or "/rev-123/").
@@ -144,6 +160,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/git/commit-message"), s.handleGitCommitMessage)
 	s.mux.HandleFunc(s.routePath("/api/git/push"), s.handleGitPush)
 	s.mux.HandleFunc(s.routePath("/api/git/pull"), s.handleGitPull)
+	s.mux.HandleFunc(s.routePath("/api/git/sync-agent"), s.handleGitSyncAgent)
+	s.mux.HandleFunc(s.routePath("/api/git/sync-state"), s.handleGitSyncState)
+	s.mux.HandleFunc(s.routePath("/api/git/abort"), s.handleGitAbort)
 	s.mux.HandleFunc(s.routePath("/api/git/log"), s.handleGitLog)
 	s.mux.HandleFunc(s.routePath("/api/unpushed"), s.handleUnpushed)
 	s.mux.HandleFunc(s.routePath("/api/commitfiles"), s.handleCommitFiles)
@@ -186,6 +205,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/pr/existing-comments"), s.handlePRExistingComments)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments/issue"), s.handlePRIssueCommentPost)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments/review-reply"), s.handlePRReviewCommentReply)
+	s.mux.HandleFunc(s.routePath("/api/pr/merge-status"), s.handlePRMergeStatus)
+	s.mux.HandleFunc(s.routePath("/api/pr/merge"), s.handlePRMerge)
+	s.mux.HandleFunc(s.routePath("/api/pr/merge-message"), s.handlePRMergeMessage)
+	s.mux.HandleFunc(s.routePath("/api/forge/connect"), s.handleForgeConnect)
 	s.mux.HandleFunc(s.routePath("/api/session"), s.handleSession)
 }
 
@@ -199,7 +222,7 @@ func NewServer(ix *Index, lsp *lspManager, basePaths ...string) *Server {
 	if len(basePaths) > 0 && basePaths[0] != "" {
 		bp = cleanBasePath(basePaths[0])
 	}
-	s := &Server{ix: ix, lsp: lsp, diffBase: "HEAD", basePath: bp, mux: http.NewServeMux()}
+	s := &Server{ix: ix, lsp: lsp, diffBase: "HEAD", basePath: bp, mux: http.NewServeMux(), streamsDone: make(chan struct{})}
 	s.session = newSessionManager(s.basePath, ix.Root())
 	s.gitWatcher = NewGitWatcher(ix)
 	s.gitWatcher.Start(context.Background())
@@ -588,6 +611,17 @@ func (s *Server) SetPR(p *prSession) {
 		if s.gitWatcher != nil {
 			s.gitWatcher.Trigger()
 		}
+		if p.target.Owner != "" && p.target.Repo != "" && p.target.Number > 0 {
+			// Drafts are keyed on the PR, not the base path. Carry over any
+			// drafts an older px0 saved under the base-path file.
+			prs := newPRSessionManager(p.target)
+			if old := s.session; old != nil && len(prs.Get().Drafts) == 0 && len(old.Get().Drafts) > 0 {
+				drafts := old.Get().Drafts
+				prs.Update(func(ws *WorkspaceSession) { ws.Drafts = drafts })
+				old.Update(func(ws *WorkspaceSession) { ws.Drafts = nil })
+			}
+			s.session = prs
+		}
 		if s.session != nil {
 			p.mu.Lock()
 			if len(p.comments) == 0 && len(s.session.Get().Drafts) > 0 {
@@ -863,7 +897,6 @@ func (s *Server) handleStatic(sub fs.FS, prefix string) http.Handler {
 func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	n, at, ms := s.ix.Stats()
 	gitCount, gitFiles := s.ix.GitChanges()
-	githubToken, _ := resolveGitHubToken(readSettings())
 	meta := map[string]any{
 		"root":        s.ix.Root(),
 		"name":        filepath.Base(s.ix.Root()),
@@ -874,7 +907,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"git":         gitAvailable(s.ix.Root()),
 		"gitChanges":  gitCount,
 		"gitFiles":    gitFiles,
-		"githubToken": githubToken != "",
+		"forge":       s.forgeMeta(),
 		"lspServers":  s.lsp.Available(),
 		"metrics":     getProcessMetrics(s.lsp),
 		"version":     version,
@@ -1568,6 +1601,8 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-s.streamsDone:
+			return
 
 		case msg, ok := <-gitCh:
 			if !ok {
@@ -1742,22 +1777,23 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pr != nil {
-		if err := s.pr.Push(); err != nil {
+		// force is only sent after the reviewer confirmed pushing a rebased
+		// PR branch; it is a lease, never a blind overwrite (prSession.Push).
+		var body struct {
+			Force bool `json:"force"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body)
+		if op := gitOpInProgress(s.ix.Root()); op != "" {
+			fail(w, http.StatusConflict, "a "+op+" is in progress; finish or abort it before pushing")
+			return
+		}
+		if err := s.pr.Push(body.Force); err != nil {
 			fail(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		// Pushed commits are part of the PR now: move the PR-head boundary so
 		// they stop being "yours" (and the PR's file set picks them up).
-		s.pr.mu.Lock()
-		s.prHeadSHA = s.pr.meta.HeadSHA
-		s.pr.mu.Unlock()
-		if s.ix != nil {
-			s.ix.SetPRHead(s.prHeadSHA)
-			s.ix.SetPushedHead(s.prHeadSHA)
-		}
-		if s.gitWatcher != nil {
-			s.gitWatcher.Trigger()
-		}
+		s.syncPRRefs()
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
@@ -1786,6 +1822,11 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.pr != nil {
+		if op := gitOpInProgress(s.ix.Root()); op != "" {
+			st, _ := s.prSyncState(false)
+			failSync(w, st, "a "+op+" is already in progress")
+			return
+		}
 		info, err := s.pr.Pull()
 		if err != nil {
 			status := http.StatusBadGateway
@@ -1795,23 +1836,16 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 			fail(w, status, err.Error())
 			return
 		}
-		s.pr.mu.Lock()
-		s.diffBase = s.pr.diffBase
-		s.prHeadSHA = s.pr.meta.HeadSHA
-		s.pr.mu.Unlock()
-		if s.ix != nil {
-			s.ix.SetDiffBase(s.diffBase)
-			s.ix.SetPRHead(s.prHeadSHA)
-			s.ix.SetPushedHead(s.prHeadSHA)
-		}
-		if s.gitWatcher != nil {
-			s.gitWatcher.Trigger()
-		}
+		s.syncPRRefs()
 		writeJSON(w, map[string]any{"ok": true, "message": info})
 		return
 	}
 
 	root := s.ix.Root()
+	if op := gitOpInProgress(root); op != "" {
+		failSync(w, s.gitSyncState(root), "a "+op+" is already in progress")
+		return
+	}
 	if gitHasUncommittedChanges(root) {
 		fail(w, http.StatusConflict, "commit or discard your local changes before pulling")
 		return
@@ -1828,7 +1862,11 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := gitFFOnlyPull(root, remote, remoteBranch); err != nil {
 		if errors.Is(err, errNotFastForward) {
-			fail(w, http.StatusConflict, fmt.Sprintf("can't fast-forward; %s has diverged from %s/%s -- resolve manually, not supported here", branch, remote, remoteBranch))
+			// The fetch already landed, so the counts reflect the remote as
+			// it is now. The panel offers a rebase or merge from here.
+			st := s.gitSyncState(root)
+			st.Code = "diverged"
+			failSync(w, st, fmt.Sprintf("can't fast-forward: %s has diverged from %s", branch, st.Upstream))
 			return
 		}
 		fail(w, http.StatusBadGateway, err.Error())
@@ -1838,6 +1876,199 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 		s.gitWatcher.Trigger()
 	}
 	writeJSON(w, map[string]any{"ok": true, "message": "pulled the latest changes"})
+}
+
+// gitSyncState is where the current branch stands against its upstream:
+// what the git panel needs to offer (or follow up on) a rebase or merge.
+type gitSyncState struct {
+	Code       string `json:"code,omitempty"` // "diverged" or "in-progress" on a refused pull
+	Branch     string `json:"branch"`
+	Upstream   string `json:"upstream"` // e.g. "origin/main"; empty when none is configured; a PR's base branch name
+	Ahead      int    `json:"ahead"`
+	Behind     int    `json:"behind"`
+	InProgress string `json:"inProgress,omitempty"` // "rebase" or "merge" left half-done
+	Dirty      bool   `json:"dirty"`
+
+	// PR review sessions only: the PR number, and whether the checkout was
+	// rewritten (rebased) past the PR head on the remote, so only a
+	// force-push can update the PR.
+	PR        int  `json:"pr,omitempty"`
+	Rewritten bool `json:"rewritten,omitempty"`
+
+	ontoRef string // the ref px0 fetched the PR's base into; the harness rebases onto it and never fetches
+}
+
+// syncPRRefs copies the PR session's head and merge-base into the server and
+// index after anything moved them (push, pull), so diffs, the file tree and
+// the ahead count all measure from the new boundary.
+func (s *Server) syncPRRefs() {
+	s.pr.mu.Lock()
+	s.diffBase = s.pr.diffBase
+	s.prHeadSHA = s.pr.meta.HeadSHA
+	s.pr.mu.Unlock()
+	if s.ix != nil {
+		s.ix.SetDiffBase(s.diffBase)
+		s.ix.SetPRHead(s.prHeadSHA)
+		s.ix.SetPushedHead(s.prHeadSHA)
+	}
+	if s.gitWatcher != nil {
+		s.gitWatcher.Trigger()
+	}
+}
+
+// prSyncState is gitSyncState for a PR review: the detached checkout
+// against the PR's base branch rather than an upstream. With fetch it
+// refreshes the base first (a network call), as a rebase must start from
+// the base as it is now.
+func (s *Server) prSyncState(fetch bool) (gitSyncState, error) {
+	p := s.pr
+	root := s.ix.Root()
+	p.mu.Lock()
+	st := gitSyncState{PR: p.meta.Number, Branch: p.meta.HeadRef, Upstream: p.meta.BaseRef, ontoRef: prBaseRef(p.meta.Number)}
+	p.mu.Unlock()
+	st.InProgress = gitOpInProgress(root)
+	if st.InProgress != "" {
+		st.Code = "in-progress"
+	}
+	var err error
+	if fetch && st.InProgress == "" {
+		_, err = p.FetchBase()
+	}
+	st.Ahead, st.Behind = gitAheadBehindRef(root, st.ontoRef)
+	st.Rewritten = p.Rewritten()
+	st.Dirty = gitHasUncommittedChanges(root)
+	return st, err
+}
+
+func (s *Server) gitSyncState(root string) gitSyncState {
+	st := gitSyncState{Branch: gitCurrentBranch(root), InProgress: gitOpInProgress(root)}
+	if st.InProgress != "" {
+		st.Code = "in-progress"
+	}
+	if st.InProgress == "rebase" {
+		if b := gitRebasingBranch(root); b != "" {
+			st.Branch = b
+		}
+	}
+	if st.Branch != "" && st.Branch != "HEAD" {
+		if remote, rb, ok := gitUpstream(root, st.Branch); ok {
+			st.Upstream = remote + "/" + rb
+		}
+	}
+	st.Ahead, st.Behind, _ = gitAheadBehind(root)
+	st.Dirty = gitHasUncommittedChanges(root)
+	return st
+}
+
+// failSync is a 409 that carries the sync state alongside the message, so
+// the panel can render the next step instead of just the refusal.
+func failSync(w http.ResponseWriter, st gitSyncState, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+		gitSyncState
+	}{msg, st})
+}
+
+// handleGitSyncState reports the branch's standing against its upstream,
+// read after an agent rebase/merge finishes to tell done from half-done.
+func (s *Server) handleGitSyncState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		fail(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.pr != nil {
+		st, err := s.prSyncState(r.URL.Query().Get("fetch") == "1")
+		if err != nil {
+			fail(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, st)
+		return
+	}
+	if !gitAvailable(s.ix.Root()) {
+		writeJSON(w, gitSyncState{})
+		return
+	}
+	writeJSON(w, s.gitSyncState(s.ix.Root()))
+}
+
+// handleGitSyncAgent dispatches the selected harness to rebase (or merge)
+// the current branch onto its upstream after a pull refused to
+// fast-forward. Only ever on an explicit click: px0 itself still never
+// rewrites history, and the harness is told never to push. When a rebase or
+// merge is already half-done (the last attempt stopped on a conflict), the
+// harness is asked to finish that one instead of starting over.
+func (s *Server) handleGitSyncAgent(w http.ResponseWriter, r *http.Request) {
+	if !localPost(w, r) {
+		return
+	}
+	if !s.agentOrFail(w) {
+		return
+	}
+	var body struct {
+		Strategy string `json:"strategy"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&body)
+	if body.Strategy != "rebase" && body.Strategy != "merge" {
+		fail(w, http.StatusBadRequest, "strategy must be rebase or merge")
+		return
+	}
+	root := s.ix.Root()
+	var st gitSyncState
+	if s.pr != nil {
+		// In a PR review, the branch is brought up to date with the PR's
+		// base: fetched here, fresh, so the harness never fetches itself.
+		var err error
+		if st, err = s.prSyncState(true); err != nil {
+			fail(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	} else {
+		st = s.gitSyncState(root)
+	}
+	if st.InProgress == "" && st.Dirty {
+		fail(w, http.StatusConflict, "commit or discard your local changes before a "+body.Strategy)
+		return
+	}
+	if st.InProgress != "" && st.InProgress != body.Strategy {
+		fail(w, http.StatusConflict, "a "+st.InProgress+" is already in progress; abort it first")
+		return
+	}
+	if st.Upstream == "" {
+		fail(w, http.StatusBadRequest, "no upstream branch configured for "+st.Branch)
+		return
+	}
+	if st.InProgress == "" && st.PR > 0 && st.Behind == 0 {
+		fail(w, http.StatusConflict, "the PR already contains everything on "+st.Upstream+"; nothing to "+body.Strategy)
+		return
+	}
+	job, err := s.agent.StartPrompt(body.Strategy+" onto "+st.Upstream, gitSyncPrompt(body.Strategy, st))
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, errAgentNone) {
+			code = http.StatusBadRequest
+		}
+		fail(w, code, err.Error())
+		return
+	}
+	writeJSON(w, job)
+}
+
+// handleGitAbort aborts a rebase or merge left in progress.
+func (s *Server) handleGitAbort(w http.ResponseWriter, r *http.Request) {
+	if !localPost(w, r) {
+		return
+	}
+	if err := gitAbortOp(s.ix.Root()); err != nil {
+		fail(w, http.StatusConflict, err.Error())
+		return
+	}
+	if s.gitWatcher != nil {
+		s.gitWatcher.Trigger()
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // handleGitLog returns recent commits from HEAD (default 5).

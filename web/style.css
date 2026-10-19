@@ -517,6 +517,55 @@ a.cc-who:hover { color: var(--accent-fg); }
 .git-token-nudge[hidden] { display: none; }
 .git-token-nudge svg { flex: none; }
 
+/* The panel's one place for git outcomes: a failed action, a pull that can't
+   fast-forward (with the rebase/merge offer), an agent rebase running, and
+   what it left behind. Git errors land here, never in a global toast. */
+.git-notice {
+  --tone: var(--err);
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 7px 8px; border: 1px solid var(--tone); border-left-width: 3px;
+  border-radius: var(--r); background: var(--bg3); font: 11.5px/1.45 var(--ui);
+}
+.git-notice[hidden] { display: none; }
+.git-notice[data-tone="warn"] { --tone: var(--warn, #e5a50a); }
+.git-notice[data-tone="busy"] { --tone: var(--accent); }
+.git-notice[data-tone="ok"] { --tone: var(--s, var(--accent)); }
+.git-notice-head { display: flex; align-items: center; gap: 6px; }
+.git-notice-title { flex: 1; min-width: 0; font-weight: 600; color: var(--tone); overflow-wrap: anywhere; }
+.git-notice[data-tone="busy"] .git-notice-title::before {
+  content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px;
+  border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  vertical-align: -1px; animation: git-notice-spin .8s linear infinite;
+}
+@keyframes git-notice-spin { to { transform: rotate(360deg); } }
+.git-notice-close {
+  flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: var(--r);
+  background: none; color: var(--faint); font: 14px/1 var(--ui); cursor: pointer;
+}
+.git-notice-close:hover { color: var(--fg); background: var(--bg4); }
+.git-notice-close[hidden] { display: none; }
+.git-notice-text { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9em; overflow-y: auto; }
+.git-notice-text:empty { display: none; }
+.git-notice-text code { font: 11px var(--mono); color: var(--fg); }
+.git-notice-text .hint { display: block; margin-top: 3px; color: var(--faint); font-size: 10.5px; }
+.git-notice-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.git-notice-actions:empty { display: none; }
+.git-notice-actions button {
+  flex: 1 1 auto; height: 24px; padding: 0 8px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--bg); color: var(--fg); font: 11px var(--ui); cursor: pointer;
+}
+.git-notice-actions button:hover:not(:disabled) { border-color: var(--accent); background: var(--bg4); }
+.git-notice-actions button.primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.git-notice-actions button.primary:hover:not(:disabled) { background: var(--accent); opacity: .9; }
+.git-notice-actions button:disabled { opacity: .5; cursor: default; }
+.git-notice-log summary { font: 10.5px var(--ui); color: var(--faint); cursor: pointer; user-select: none; }
+.git-notice-log[hidden] { display: none; }
+.git-notice-log pre {
+  margin: 4px 0 0; padding: 6px; max-height: 160px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r);
+  font: 10.5px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
 .git-clean-state {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   padding: 8px 10px; font: 12px var(--ui); color: var(--faint);
@@ -1144,6 +1193,29 @@ body.word-wrap .c { white-space: pre-wrap; word-break: break-word; overflow-wrap
 .diff-row.diff-del, .diff-side.diff-del { background: var(--gd-bg); }
 .diff-row.diff-del .diff-mk, .diff-side.diff-del .diff-mk { color: var(--gd); }
 .diff-side.diff-blank { background: var(--bg2); }
+.diff-char-add {
+  background: color-mix(in srgb, var(--gi) 38%, transparent);
+  border-radius: 2px;
+}
+.diff-char-del {
+  background: color-mix(in srgb, var(--gd) 38%, transparent);
+  border-radius: 2px;
+}
+.diff-char-bar-del,
+.diff-char-bar-add {
+  display: inline-block;
+  width: 2px;
+  height: 1.15em;
+  vertical-align: -0.18em;
+  margin: 0 1px;
+  border-radius: 1px;
+}
+.diff-char-bar-del {
+  background: color-mix(in srgb, var(--gd) 50%, transparent);
+}
+.diff-char-bar-add {
+  background: color-mix(in srgb, var(--gi) 50%, transparent);
+}
 /* Split: deletions and additions paired side by side, each half its own mini-row. */
 .diff-row-pair { display: flex; }
 .diff-side { flex: 1 1 50%; min-width: 0; }
@@ -2934,6 +3006,132 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 }
 .pr-btn-request-changes:hover:not(:disabled) { background: color-mix(in srgb, var(--err) 26%, transparent); }
 
+/* Approving a PR that still conflicts is allowed, but shouldn't read as
+   the all-clear: same button, dashed border. */
+.pr-btn-approve.pr-btn-caution { border-style: dashed; }
+.pr-review-row .footer-btn:disabled { opacity: .5; cursor: default; }
+
+/* ---------- PR merge (web/src/prmerge.js) ---------- */
+/* One pill on whether the PR can merge; it is a button whenever there is a
+   next step (resolve, force-push) and refreshes the status otherwise. */
+.pr-merge-state {
+  --tone: var(--faint);
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  font: 600 11px var(--ui); color: var(--tone); cursor: pointer;
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tone) 60%, transparent);
+  border-radius: 999px; padding: 1px 8px;
+}
+.pr-merge-state[hidden] { display: none; }
+.pr-merge-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pr-merge-state[data-tone="ok"] { --tone: var(--gi); }
+.pr-merge-state[data-tone="warn"] { --tone: var(--warn, #e5a50a); }
+.pr-merge-state[data-tone="err"] { --tone: var(--err); }
+.pr-merge-state[data-tone="busy"] { --tone: var(--accent); }
+.pr-merge-state[data-tone="busy"]::before {
+  background: none; border: 1.5px solid currentColor; border-right-color: transparent;
+  animation: git-notice-spin .8s linear infinite;
+}
+.pr-merge-state:hover { background: color-mix(in srgb, var(--tone) 22%, transparent); }
+
+.pr-merge-group { position: relative; display: flex; flex: none; }
+.pr-merge-group[hidden] { display: none; }
+.pr-review-row .pr-btn-merge {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: var(--accent); color: var(--accent-fg); font-weight: 600;
+}
+.pr-review-row .pr-btn-merge:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
+.pr-review-row .pr-btn-merge[data-tone="warn"] {
+  background: color-mix(in srgb, var(--warn, #e5a50a) 14%, transparent);
+  border-color: var(--warn, #e5a50a); color: var(--warn, #e5a50a);
+}
+.pr-merge-group #pr-merge { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.pr-review-row .pr-merge-caret {
+  padding: 0 6px; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+.pr-merge-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; width: 300px;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+.pr-merge-menu[hidden] { display: none; }
+.pr-merge-menu button {
+  display: flex; gap: 8px; align-items: flex-start; text-align: left; width: 100%;
+  padding: 6px 8px; border: 0; border-radius: var(--r); background: none; color: var(--fg); cursor: pointer;
+}
+.pr-merge-menu button:hover { background: var(--bg4); }
+.pr-merge-menu-check { flex: none; width: 12px; color: var(--accent-fg); font: 12px var(--ui); }
+.pr-merge-menu-text { display: flex; flex-direction: column; gap: 2px; font: 11px/1.4 var(--ui); color: var(--faint); }
+.pr-merge-menu-text b { font: 600 12px var(--ui); color: var(--fg); }
+
+.pr-merge-dialog {
+  width: min(620px, 94vw); max-height: 90vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 16px 18px;
+  background: var(--bg2); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+  font: 12px var(--ui); color: var(--fg);
+}
+.pr-merge-head { display: flex; align-items: flex-start; gap: 8px; }
+.pr-merge-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pr-merge-head h2 { margin: 0; font: 600 15px var(--ui); }
+.pr-merge-refs { color: var(--faint); font-size: 11px; }
+.pr-merge-refs code { font: 11px var(--mono); color: var(--fg); }
+.pr-merge-methods { display: flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.pr-merge-methods button {
+  flex: 1; padding: 6px 8px; border: 0; border-left: 1px solid var(--line);
+  background: var(--bg); color: var(--faint); font: 12px var(--ui); cursor: pointer;
+}
+.pr-merge-methods button:first-child { border-left: 0; }
+.pr-merge-methods button:hover { color: var(--fg); background: var(--bg4); }
+.pr-merge-methods button.on { background: color-mix(in srgb, var(--accent) 20%, var(--bg)); color: var(--fg); font-weight: 600; }
+.pr-merge-explain { margin: 0; color: var(--faint); }
+.pr-merge-warnings { display: flex; flex-direction: column; gap: 6px; }
+.pr-merge-warnings:empty { display: none; }
+.pr-merge-warn {
+  padding: 6px 8px; border-left: 3px solid var(--warn, #e5a50a); border-radius: var(--r);
+  background: color-mix(in srgb, var(--warn, #e5a50a) 10%, transparent);
+}
+.pr-merge-warn.block { border-left-color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
+.pr-merge-commit { display: flex; flex-direction: column; gap: 5px; }
+.pr-merge-commit[hidden] { display: none; }
+.pr-merge-label { font: 600 11px var(--ui); color: var(--faint); }
+.pr-merge-label-row { display: flex; align-items: baseline; justify-content: space-between; margin-top: 4px; }
+.pr-merge-input {
+  width: 100%; box-sizing: border-box; padding: 6px 8px; font: 12px var(--mono); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); outline: none;
+}
+.pr-merge-input:focus { border-color: var(--accent); }
+.pr-merge-body { resize: vertical; min-height: 110px; line-height: 1.45; }
+.pr-merge-ai { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.pr-merge-ai .pr-merge-input { flex: 1; min-width: 0; font-family: var(--ui); }
+.pr-merge-ai .git-agent-picker { flex: none; }
+.pr-merge-ai[hidden] { display: none; }
+.pr-merge-ai .footer-btn, .pr-merge-foot .footer-btn { height: 26px; padding: 0 10px; border: 1px solid var(--line); background: var(--bg3); }
+.pr-merge-foot .pr-btn-merge {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600;
+}
+.pr-merge-foot .footer-btn:disabled { opacity: .5; cursor: default; }
+.pr-merge-note { font-size: 11px; color: var(--faint); }
+.pr-merge-note[hidden] { display: none; }
+.pr-merge-link { color: var(--accent-fg); text-decoration: none; font-size: 11px; }
+.pr-merge-link:hover { text-decoration: underline; }
+.pr-merge-commit-list {
+  margin: 0; padding: 6px 8px 6px 28px; max-height: 180px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r);
+}
+.pr-merge-commit-list[hidden] { display: none; }
+.pr-merge-commit-list li { padding: 2px 0; }
+.pr-merge-commit-list li.empty { list-style: none; color: var(--faint); }
+.pr-merge-commit-list code { font: 11px var(--mono); color: var(--accent-fg); }
+.pr-merge-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+
+/* ---------- Connect dialog (web/src/forgeconnect.js) ---------- */
+.forge-connect-dialog { width: min(520px, 94vw); }
+.forge-connect-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; line-height: 1.45; }
+.forge-connect-extra { display: flex; flex-direction: column; gap: 5px; }
+.forge-connect-extra[hidden] { display: none; }
+.forge-connect-dialog .pr-merge-note code { font: 11px var(--mono); color: var(--fg); }
+.forge-connect-dialog .pr-merge-note:empty { display: none; }
+
 
 /* ---------- threads: long-running conversations in the right sidebar ---------- */
 .thr-tab-dot {
@@ -3077,3 +3275,339 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 .thr-scope button.active { color: var(--accent-fg); border-color: var(--accent); background: var(--bg2); }
 .thr-scope button:disabled { opacity: .4; cursor: default; }
 .thr-compose { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--line); }
+
+/* ---------- Floating Async Tip Widget ---------- */
+.tip-widget {
+  position: fixed;
+  bottom: 34px;
+  right: 18px;
+  width: 360px;
+  max-width: calc(100vw - 36px);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  z-index: 125;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(14px) scale(0.98);
+  transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+.tip-widget[hidden] {
+  display: none;
+}
+.tip-widget.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+.tip-widget-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--line);
+}
+.tip-widget-tag-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.tip-widget-bulb {
+  color: var(--accent-fg, #eab308);
+  flex-shrink: 0;
+}
+.tip-widget-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg);
+}
+.tip-tag-pill {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg4);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: color .1s, border-color .1s, background .1s;
+}
+.tip-tag-pill:hover {
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.tip-count-chip {
+  font: 10px var(--mono);
+  color: var(--faint);
+  margin-left: 2px;
+}
+.tip-btn-close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--faint);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--r);
+  transition: color .1s;
+}
+.tip-btn-close:hover {
+  color: var(--fg);
+}
+.tip-widget-body {
+  padding: 12px 14px 10px;
+}
+.tip-widget-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.35;
+}
+.tip-widget-content {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+.tip-widget-shortcut {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.tip-shortcut-label {
+  color: var(--faint);
+}
+.tip-widget-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  background: var(--bg3);
+  border-top: 1px solid var(--line);
+}
+.tip-btn-link {
+  background: transparent;
+  border: none;
+  font-size: 11px;
+  color: var(--faint);
+  cursor: pointer;
+  padding: 2px 4px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color .1s;
+}
+.tip-btn-link:hover {
+  color: var(--dim);
+}
+.tip-widget-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tip-btn-nav {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  background: var(--bg4);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--dim);
+  cursor: pointer;
+  transition: color .1s, border-color .1s;
+}
+.tip-btn-nav:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.tip-btn-all {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  height: 22px;
+  background: var(--bg4);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--fg);
+  cursor: pointer;
+  transition: color .1s, border-color .1s, background .1s;
+}
+.tip-btn-all:hover {
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+/* Shared tip typography */
+.tip-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg4);
+  color: var(--accent-fg);
+  padding: 1px 5px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+}
+.tip-shortcut-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.tip-shortcut-keys kbd,
+.tip-widget-shortcut kbd,
+.tip-item-content kbd,
+.tip-widget-content kbd,
+.tip-kbd {
+  font: 10px var(--mono);
+  background: var(--bg4);
+  color: var(--accent-fg);
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+  border-radius: var(--r);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.25);
+  display: inline-block;
+  vertical-align: middle;
+  line-height: 1.3;
+}
+.tip-link {
+  color: var(--accent-fg, var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.tip-link:hover {
+  opacity: 0.85;
+}
+
+/* ---------- Tips Inspector Pane ---------- */
+#pane-right-tips {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+#pane-right-tips.active {
+  display: flex;
+}
+.tips-header-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+.tips-search-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 3px 8px;
+  color: var(--faint);
+}
+.tips-search-wrap:focus-within {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+#tips-filter {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  color: var(--fg);
+  outline: none;
+  width: 100%;
+}
+.tips-toolbar-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.tips-setting-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--dim);
+}
+.tips-setting-toggle input {
+  cursor: pointer;
+}
+.tips-setting-toggle:hover {
+  color: var(--fg);
+}
+#tips-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tip-item {
+  background: var(--bg3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  transition: border-color .15s ease, background .15s ease;
+}
+.tip-item:hover {
+  border-color: var(--accent);
+}
+.tip-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.tip-item-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.tip-item-num {
+  font: 10px var(--mono);
+  color: var(--faint);
+  flex-shrink: 0;
+}
+.tip-item-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tip-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.tip-item-content {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}

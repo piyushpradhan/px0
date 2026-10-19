@@ -37,7 +37,12 @@ export function setRightInspectorTab(tab) {
   $('#pane-right-calls')?.classList.toggle('active', tab === 'calls');
   $('#pane-right-search')?.classList.toggle('active', tab === 'search');
   $('#pane-right-threads')?.classList.toggle('active', tab === 'threads');
+  $('#pane-right-tips')?.classList.toggle('active', tab === 'tips');
   if (tab === 'threads') emit('threads:shown');
+  if (tab === 'tips') {
+    emit('tips:shown');
+    $('#tips-filter')?.focus();
+  }
   if (tab === 'symbols') {
     loadOutline();
     $('#right-symbols-filter')?.focus();

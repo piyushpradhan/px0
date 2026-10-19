@@ -32,20 +32,22 @@ type WorkspaceSession struct {
 	Drafts   []prComment  `json:"drafts,omitempty"`
 }
 
-// sessionFilePath returns the path to the JSON file where workspace session state is saved.
-// It uses XDG_STATE_HOME/px0/sessions if available, falling back to ~/.px0/sessions or
-// os.TempDir()/px0-sessions. The file name is derived from the base path or an 8-byte
-// SHA-256 hash of the cleaned workspace root path.
-func sessionFilePath(basePath, root string) string {
-	dir := ""
+// sessionDir returns the directory holding session files: XDG_STATE_HOME/px0/sessions
+// if available, falling back to ~/.px0/sessions or os.TempDir()/px0-sessions.
+func sessionDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		dir = filepath.Join(xdg, "px0", "sessions")
-	} else if home, err := os.UserHomeDir(); err == nil && home != "" {
-		dir = filepath.Join(home, ".px0", "sessions")
-	} else {
-		dir = filepath.Join(os.TempDir(), "px0-sessions")
+		return filepath.Join(xdg, "px0", "sessions")
 	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".px0", "sessions")
+	}
+	return filepath.Join(os.TempDir(), "px0-sessions")
+}
 
+// sessionFilePath returns the path to the JSON file where workspace session state is saved.
+// The file name is derived from the base path or an 8-byte SHA-256 hash of the cleaned
+// workspace root path.
+func sessionFilePath(basePath, root string) string {
 	key := ""
 	if basePath != "" && basePath != "/" {
 		clean := strings.Trim(basePath, "/")
@@ -55,7 +57,25 @@ func sessionFilePath(basePath, root string) string {
 		h := sha256.Sum256([]byte(filepath.Clean(root)))
 		key = hex.EncodeToString(h[:8])
 	}
-	return filepath.Join(dir, key+".json")
+	return filepath.Join(sessionDir(), key+".json")
+}
+
+// prSessionFilePath returns the session file for a pull request, keyed on the PR
+// itself (the workbench item ID) rather than the base path or checkout root. Every
+// opening checks the PR out into a new temporary directory, so a root-keyed file
+// would never be found again.
+func prSessionFilePath(pt PRTarget) string {
+	return filepath.Join(sessionDir(), "pr-"+wbPRItem(pt).ID+".json")
+}
+
+// newPRSessionManager opens the session file for a pull request.
+func newPRSessionManager(pt PRTarget) *sessionManager {
+	sm := &sessionManager{
+		path: prSessionFilePath(pt),
+		data: WorkspaceSession{Tabs: []SessionTab{}, OpenDirs: []string{}},
+	}
+	sm.load()
+	return sm
 }
 
 // sessionManager coordinates concurrent thread-safe access and persistence

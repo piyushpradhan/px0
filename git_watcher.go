@@ -28,6 +28,7 @@ type GitStatusPayload struct {
 	CommitsURL    string            `json:"commitsUrl,omitempty"`    // Web URL to view commits on GitHub/forge
 	Ahead         int               `json:"ahead"`                   // Commits ahead of upstream tracking branch
 	Behind        int               `json:"behind"`                  // Commits behind upstream tracking branch
+	Rewritten     bool              `json:"rewritten,omitempty"`     // PR mode: HEAD no longer contains the PR head (an unpushed rebase); only a force-push updates the PR
 }
 
 // GitWatcher monitors git state changes in the background and broadcasts updates
@@ -54,6 +55,7 @@ type GitWatcher struct {
 	lastHeadCommit string
 	lastAhead      int
 	lastBehind     int
+	lastRewritten  bool
 }
 
 // NewGitWatcher constructs a new GitWatcher attached to the given workspace index.
@@ -196,6 +198,7 @@ func (gw *GitWatcher) Refresh() GitStatusPayload {
 	count, files, changed, statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs := gw.ix.UpdateGitStatus()
 	var recentCommits []GitCommit
 	var ahead, behind int
+	var rewritten bool
 	if gitAvailable(gw.root) {
 		recentCommits = gitRecentCommits(gw.root, 5)
 		headCommit := ""
@@ -203,11 +206,15 @@ func (gw *GitWatcher) Refresh() GitStatusPayload {
 			headCommit = recentCommits[0].Hash
 		}
 		ahead, behind = gw.aheadBehind()
+		if head := gw.ix.PushedHead(); validSHA(head) && ahead > 0 {
+			rewritten = !gitIsAncestor(gw.root, head, "HEAD")
+		}
 		gw.mu.Lock()
-		if headCommit != gw.lastHeadCommit || ahead != gw.lastAhead || behind != gw.lastBehind {
+		if headCommit != gw.lastHeadCommit || ahead != gw.lastAhead || behind != gw.lastBehind || rewritten != gw.lastRewritten {
 			gw.lastHeadCommit = headCommit
 			gw.lastAhead = ahead
 			gw.lastBehind = behind
+			gw.lastRewritten = rewritten
 			changed = true
 		}
 		gw.mu.Unlock()
@@ -228,6 +235,7 @@ func (gw *GitWatcher) Refresh() GitStatusPayload {
 		CommitsURL:    gitCommitsWebURL(gw.root, branch),
 		Ahead:         ahead,
 		Behind:        behind,
+		Rewritten:     rewritten,
 	}
 	if changed {
 		data, err := json.Marshal(payload)

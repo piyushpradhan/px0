@@ -7,6 +7,9 @@ import { setThreadHandler, hideSelectionBar } from './selbar.js';
 import { showRightInspector } from './inspector.js';
 import { registerAgentPicker, reloadWorkspace } from './agent.js';
 
+const COPY_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg>';
+const COPIED_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5 8.5 6.5 11.5 12.5 5.5"/></svg>';
+
 /* A thread is a long-running conversation with the coding harness, kept on the
    server. It starts from a spot in the code but is not limited to it: the
    harness may read and change any file, and each turn reports the files it
@@ -156,7 +159,7 @@ function thrMd(src) {
         i++;
       }
       const code = esc(codeLines.join('\n'));
-      html += `<div class="thr-pre"` + (lang ? ` data-lang="${esc(lang)}"` : '') + `><pre><code>` + code + `</code></pre><button class="thr-copy" title="Copy code" aria-label="Copy code"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg></button></div>`;
+      html += `<div class="thr-pre"` + (lang ? ` data-lang="${esc(lang)}"` : '') + `><pre><code>` + code + `</code></pre><button class="thr-copy" title="Copy code" aria-label="Copy code">` + COPY_ICON + `</button></div>`;
       continue;
     }
 
@@ -699,7 +702,17 @@ export function initThreads() {
     const cp = /** @type {HTMLElement|null} */ (e.target)?.closest('.thr-copy');
     if (cp) {
       const code = cp.closest('.thr-pre')?.querySelector('code')?.textContent || '';
-      if (code) copyToClipboard(code, 'Copied code', cp);
+      if (code) {
+        // The button is icon-sized: a tick, not the "✓ Copied" label flash.
+        copyToClipboard(code, 'Copied code');
+        clearTimeout(cp._copiedTimer);
+        cp.classList.add('copied');
+        cp.innerHTML = COPIED_ICON;
+        cp._copiedTimer = setTimeout(() => {
+          cp.classList.remove('copied');
+          cp.innerHTML = COPY_ICON;
+        }, 1400);
+      }
       return;
     }
     const link = /** @type {HTMLElement|null} */ (e.target)?.closest('a.thr-link');

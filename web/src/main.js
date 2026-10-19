@@ -5,7 +5,7 @@ import { initTabs, openFile, switchTab } from './tabs.js';
 import { initCursor } from './cursor.js';
 import { initHover } from './hover.js';
 import { initSelectionBar } from './selbar.js';
-import { drawTree, treeEl, initTree, revealFile, refreshTree, setSidebarMode, updateSidebarToggleState, hasGitView } from './tree.js';
+import { drawTree, treeEl, initTree, revealFile, refreshTree, collapseAllDirs, expandDirtyDirs, inGitMode, setAutoRevealSuppressed, setSidebarMode, updateSidebarToggleState, hasGitView } from './tree.js';
 import { initSearch } from './search.js';
 import { initOutline } from './outline.js';
 import { initPanels } from './panels.js';
@@ -31,12 +31,14 @@ import { initUnpushed, refreshUnpushed } from './unpushed.js';
 import { initPRScope } from './prscope.js';
 import { initEditView } from './editview.js';
 import { initNewItem } from './newitem.js';
+import { initTips, startTipsAsync } from './tips.js';
 
 // Initialize all subsystems
 initRenderer();
 initTabs();
 initEditView();
 initNewItem();
+initTips();
 initCursor();
 initHover();
 initSelectionBar();
@@ -120,6 +122,7 @@ initPRScope();
     }
   }
   updateStatus();
+  setAutoRevealSuppressed(true);
   await refreshTree();
   initGitStream();
 
@@ -133,8 +136,8 @@ initPRScope();
     // still belongs in Git view, which is the only place they are listed.
     await refreshUnpushed();
     const showGit = hasGitView();
-    await setSidebarMode(showGit ? 'git' : 'files');
-    return !!(S.meta?.git && S.meta.gitChanges > 0);
+    await setSidebarMode(showGit ? 'git' : 'files', { expandDirty: showGit });
+    return !!(S.meta?.git && ((S.meta.gitChanges > 0) || S.meta?.pr));
   };
   const selectChangedFileTab = async () => {
     if (S.tabs[S.active]?.diffAvailable) return;
@@ -143,7 +146,6 @@ initPRScope();
       switchTab(changedTabIdx);
     } else if (S.meta.gitFiles && S.meta.gitFiles.length > 0) {
       await openFile(S.meta.gitFiles[0]);
-      await revealFile(S.meta.gitFiles[0]);
     }
   };
 
@@ -154,7 +156,6 @@ initPRScope();
   const initialLine = parseInt(params.get('line'), 10) || undefined;
   if (initialPath) {
     await openFile(initialPath, { line: initialLine });
-    await revealFile(initialPath);
     try {
       const u = new URL(window.location.href);
       u.searchParams.delete('path');
@@ -166,6 +167,15 @@ initPRScope();
   } else {
     if (hasGitChanges) await selectChangedFileTab();
   }
+
+  if (inGitMode()) {
+    await expandDirtyDirs();
+    const activeDoc = S.tabs[S.active];
+    if (activeDoc?.path) await revealFile(activeDoc.path);
+  } else {
+    collapseAllDirs();
+  }
+  setAutoRevealSuppressed(false);
 
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => { measure(); layout(); render(); });
@@ -182,8 +192,17 @@ initPRScope();
           S.meta = m;
           updateStatus();
           if (!initialPath) {
+            setAutoRevealSuppressed(true);
             hasGitChanges = await applyGitSidebarState();
             if (hasGitChanges) await selectChangedFileTab();
+            if (inGitMode()) {
+              await expandDirtyDirs();
+              const activeDoc = S.tabs[S.active];
+              if (activeDoc?.path) await revealFile(activeDoc.path);
+            } else {
+              collapseAllDirs();
+            }
+            setAutoRevealSuppressed(false);
           }
         }
       } catch {
@@ -194,4 +213,7 @@ initPRScope();
 
   // Load harnesses and models asynchronously after the browser is loaded.
   loadAgentAsync();
+
+  // Load and asynchronously display tips
+  startTipsAsync();
 })();

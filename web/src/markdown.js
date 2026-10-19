@@ -37,7 +37,7 @@ export function previewKind(d = doc_()) {
 export function previewing(d = doc_()) {
   const kind = previewKind(d);
   const on = kind === 'markdown' ? S.mdPreview : kind === 'table' ? S.tablePreview : false;
-  return !!(on && !d.mdError && !d.diffMode);
+  return !!(on && !d.mdError && !d.diffMode && !d.isEditing);
 }
 
 /* Show or hide the preview to match the active tab. Call whenever that changes. */
@@ -111,6 +111,7 @@ function scheduleMermaidThemeRender() {
 
 export function togglePreview() {
   const d = doc_();
+  if (d && d.isEditing) return;
   if (!previewKind(d)) { showToast('!', 'Preview works on Markdown, CSV and TSV files'); return; }
   hideHover();
   exitMermaidFullscreen();

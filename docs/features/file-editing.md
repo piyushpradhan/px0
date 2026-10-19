@@ -9,6 +9,7 @@ px0 can edit a file in place and create new files and folders from the browser. 
 - Press **`Cmd/Ctrl+E`**, click the **Edit** button in the tab header, or run **File: Edit Current File** from the Command Palette. The code view is replaced by a plain text editor with its own line-number gutter.
 - Press **`Cmd/Ctrl+S`** (or the **Save** button) to write the file. The button briefly turns solid green with a check mark on success.
 - Press **`Esc`**, **`Cmd/Ctrl+E`** again, or the **Done** button to leave edit mode. If there are unsaved changes you are asked before they are discarded.
+- On a Markdown, CSV or TSV file, leaving edit mode goes back to the view you were in, Preview or Source, showing the saved content at the line you were editing. Editing from Preview starts at the part of the file you were reading.
 - Editing is not offered for images, deleted files, or tabs pinned to a commit.
 - Files over 10,000 lines or 1 MB ask for confirmation first, because the whole file is loaded into the editor.
 
