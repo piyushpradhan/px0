@@ -162,7 +162,7 @@ if [ -z "$TARGET_DIR" ]; then
   fi
 fi
 
-# Priority 4: Last resort — requiring sudo
+# Priority 4: Last resort (requiring sudo)
 if [ -z "$TARGET_DIR" ]; then
   if command -v sudo >/dev/null 2>&1 && [ -d "/usr/local/bin" ]; then
     USE_SUDO=1
@@ -306,6 +306,7 @@ if [ "$PATH_ALREADY_CONFIGURED" = "0" ]; then
   fi
 fi
 
-printf "\nRun %b to inspect any directory:\n\n" "${BOLD}px0${RESET}"
-printf "  ${AMBER}px0 .${RESET}                 # inspect current directory\n"
-printf "  ${AMBER}px0 /path/to/project${RESET}  # or pass any directory path\n\n"
+printf "\nRun %b to get started:\n\n" "${BOLD}px0${RESET}"
+printf "  ${AMBER}px0${RESET}                                      # launch workbench\n"
+printf "  ${AMBER}px0 .${RESET}                                    # load current directory\n"
+printf "  ${AMBER}px0 https://github.com/org/repo/pull/123${RESET} # review PR in an isolated worktree\n\n"

@@ -71,6 +71,12 @@ test("every registered editor API has a callable SDK wrapper", async () => {
     ["POST", "git/stage", () => px0.git.stage(edit.path)], ["POST", "git/unstage", () => px0.git.unstage(edit.path)],
     ["POST", "git/commit", () => px0.git.commit("message")], ["POST", "git/pull", () => px0.git.pull()],
     ["POST", "git/push", () => px0.git.push()], ["POST", "git/commit-message", () => px0.git.commitMessage()],
+    ["POST", "git/push", () => px0.git.push({ force: true }), { force: true }],
+    ["GET", "git/sync-state", () => px0.git.syncState({ fetch: true })],
+    ["POST", "git/sync-agent", () => px0.git.syncAgent("rebase"), { strategy: "rebase" }],
+    ["POST", "git/sync-agent", () => px0.git.syncAgent("merge"), { strategy: "merge" }],
+    ["POST", "git/abort", () => px0.git.abort(), {}],
+    ["POST", "forge/connect", () => px0.forge.connect("token", { extra: "account@example.test" }), { token: "token", extra: "account@example.test" }],
     ["GET", "agent/harnesses", () => px0.agent.harnesses()], ["POST", "agent/select", () => px0.agent.select("codex", { model: "model" })],
     ["POST", "agent/edit", () => px0.agent.edit(edit)], ["POST", "agent/batch", () => px0.agent.edit([edit])],
     ["GET", "agent/job", () => px0.agent.job(1)], ["GET", "agent/job", () => px0.agent.wait(1)], ["POST", "agent/cancel", () => px0.agent.cancel(0)],
@@ -80,6 +86,9 @@ test("every registered editor API has a callable SDK wrapper", async () => {
     ["POST", "threads/cancel", () => px0.threads.cancel("t1")], ["POST", "threads/delete", () => px0.threads.delete("t1")],
     ["GET", "threads/get", () => px0.threads.wait("t1")], ["GET", "threads/stream", () => oneEvent(px0.threads.events({ id: "t1" }))],
     ["GET", "pr/meta", () => px0.pr.meta()], ["GET", "pr/existing-comments", () => px0.pr.comments()],
+    ["GET", "pr/merge-status", () => px0.pr.mergeStatus()],
+    ["POST", "pr/merge", () => px0.pr.merge("squash", { title: "Title", message: "Body" }), { method: "squash", title: "Title", message: "Body" }],
+    ["POST", "pr/merge-message", () => px0.pr.mergeMessage("merge", { title: "Title", message: "Body", instruction: "Be concise" }), { method: "merge", title: "Title", message: "Body", instruction: "Be concise" }],
     ["GET", "pr/comments", () => px0.pr.drafts()], ["POST", "pr/comments", () => px0.pr.addDraft({ path: edit.path, line: 1, body: "review" })],
     ["POST", "pr/comments/delete", () => px0.pr.deleteDraft(1)], ["POST", "pr/submit", () => px0.pr.submit("COMMENT")],
     ["POST", "pr/comments/issue", () => px0.pr.comment("review")], ["POST", "pr/comments/review-reply", () => px0.pr.reply(1, "reply")],
@@ -94,6 +103,7 @@ test("every registered editor API has a callable SDK wrapper", async () => {
     assert.equal(calls[0].init.method, method);
     if (body !== undefined) assert.deepEqual(JSON.parse(String(calls[0].init.body)), body);
     if (["file", "diff", "gutter"].includes(path)) assert.equal(calls[0].url.searchParams.get("ref"), "HEAD");
+    if (path === "git/sync-state") assert.equal(calls[0].url.searchParams.get("fetch"), "1");
     if (method === "POST") assert.equal(new Headers(calls[0].init.headers).get("Origin"), "http://localhost:7777");
     if (path.includes("stream")) assert.equal(new Headers(calls[0].init.headers).get("Accept"), "text/event-stream");
     covered.add(path);
@@ -114,6 +124,9 @@ test("public SDK fields and optionality match the editor's JSON structs", () => 
     ["git.go", "GitCommit", "GitCommit"], ["git.go", "UnpushedCommit", "UnpushedCommit"],
     ["git.go", "CommitFile", "CommitFile"], ["git.go", "CommitDetail", "CommitDetail"],
     ["git_watcher.go", "GitStatusPayload", "GitStatus"], ["agent.go", "agentHarness", "Harness"],
+    ["server.go", "gitSyncState", "GitSyncState"], ["provider.go", "ForgeInfo", "ForgeInfo"],
+    ["provider.go", "TokenSetup", "TokenSetup"], ["provider.go", "TokenField", "TokenField"],
+    ["provider.go", "PRMergeStatus", "PRMergeStatus"], ["pr.go", "prMergeMessage", "PRMergeMessage"],
     ["agent.go", "agentBatchItem", "EditRequest"], ["agent.go", "agentJob", "AgentJob"],
     ["thread.go", "threadTurn", "ThreadTurn"], ["thread.go", "thread", "Thread"], ["thread.go", "threadSummary", "ThreadSummary"],
     ["session.go", "SessionTab", "SessionTab"], ["session.go", "WorkspaceSession", "Session"],

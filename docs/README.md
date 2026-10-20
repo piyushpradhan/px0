@@ -10,19 +10,23 @@ This directory houses the comprehensive documentation for px0, split into user-f
 
 ### 1. [Feature Guides](features/README.md)
 Detailed walkthroughs of all px0 features, capabilities, developer workflows, and configuration options without low-level implementation noise.
-- **[Features Overview & Catalog](features/README.md)**: Master index of all 18 feature areas.
+- **[Features Overview & Catalog](features/README.md)**: Master index of all feature areas.
+- **[Review Workbench](features/workbench.md)**: Single-port launcher (`px0`), folder completion, filesystem browser, worktree-backed PRs, and pinned/recent workspaces.
 - **[Fuzzy File Search & Quick Open](features/fuzzy-file-search.md)**: Rapid multi-file discovery with recency weighting (`Cmd/Ctrl+P`, `Cmd/Ctrl+K`).
 - **[Workspace Text & Regex Search](features/workspace-search.md)**: Full-repository pattern matching and symbol exploration (`Cmd/Ctrl+Shift+F`).
 - **[Symbol Outline & Navigation](features/symbol-outline.md)**: In-file structural symbol trees with LSP and regex fallbacks (`Cmd/Ctrl+Shift+O`).
 - **[In-File Find & Caret Navigation](features/in-file-search.md)**: Active document search (`Cmd/Ctrl+F`), line jumps (`Cmd/Ctrl+G`), and caret motion.
 - **[Getting Started with Pull Request Review](features/pr-review-getting-started.md)**: Open, connect, review, resolve and merge your first PR on GitHub, GitLab, Gitea/Forgejo or Bitbucket.
 - **[Pull Request Review](features/github-pr-review.md)**: Full-tree PR checkout, merge-base diffs, review verdicts, AI conflict resolution and merging, across four forges (`px0 <pr-url>`).
-- **[Git Awareness & Visual Diff Viewer](features/git-integration.md)**: Status badges, dirty ancestor trees, gutter markers, and side-by-side / unified diffs (`Cmd/Ctrl+D`).
+- **[Git Awareness & Visual Diff Viewer](features/git-integration.md)**: Status badges, dirty ancestor trees, gutter markers, side-by-side / unified diffs with intra-line character highlights (`Cmd/Ctrl+D`), and sidebar git panel with AI commit messages and AI rebase/merge.
 - **[Direct File Editing & Creation](features/file-editing.md)**: In-browser edit and save (`Cmd/Ctrl+E`, `Cmd/Ctrl+S`), new files and folders.
 - **[Editing with Coding Agents](features/agent-editing.md)**: Delegating code changes to Claude Code, Gemini CLI, Cursor Agent, Antigravity, OpenCode, Codex, Aider, and Goose.
+- **[Threads](features/threads.md)**: Multi-turn agent conversations with file access, live turn diffs, and persistent history (`Alt+T`).
 - **[LSP & Semantic Code Intelligence](features/lsp-code-intelligence.md)**: Go to Definition (`F12`), References (`Shift+F12`), Call Trails (`Alt+Shift+H`), and Hover cards.
 - **[Rendered Markdown Preview](features/markdown-preview.md)**: GFM rendering, syntax-highlighted code fences with copy buttons, and synchronized scrolling (`Alt+M`).
+- **[CSV & TSV Table View](features/table-view.md)**: Pin headers, line numbering, and parse tabular data cleanly (`Alt+M`).
 - **[Image Viewer & Asset Inspection](features/image-viewer.md)**: First-class image tabs, zoom/pan transforms, alpha contrast modes, and markdown lightbox.
+- **[Tips & Tricks System](features/tips-system.md)**: Interactive floating tips widget, inspector tab, and offline fallbacks.
 - **[Settings & Preferences System](features/settings-and-configuration.md)**: Graphical form editor (`Cmd/Ctrl+,`), raw JSON synchronization, and live previews.
 - **[Syntax Highlighting & Language Support](features/syntax-highlighting.md)**: Windowed Chroma lexing for ~280 languages, rainbow brackets, and occurrence highlighting.
 - **[Themes & Visual Customization](features/themes-and-styling.md)**: 14 built-in dark and light themes powered by CSS variables.
@@ -36,6 +40,7 @@ Detailed walkthroughs of all px0 features, capabilities, developer workflows, an
 In-depth technical write-ups covering px0's Go server runtime, concurrency pipelines, AST manipulation, custom virtual DOM scroller, and data structures.
 - **[Subsystem Architecture Map](internals/README.md#1-subsystem-architecture-map)**
 - **[System Architecture & Runtime Lifecycle](internals/architecture.md)**
+- **[Review Workbench Architecture](internals/workbench.md)**
 - **[Filesystem Indexing & Ignore Engine](internals/indexing-and-ignore.md)**
 - **[Fuzzy Path Matching Algorithm](internals/fuzzy-search.md)**
 - **[Workspace Search & Parallel Grep](internals/workspace-search.md)**
@@ -43,8 +48,9 @@ In-depth technical write-ups covering px0's Go server runtime, concurrency pipel
 - **[Language Server Protocol Architecture](internals/lsp-and-intelligence.md)**
 - **[Git Awareness & Porcelain Diffing](internals/git-integration.md)**
 - **[Pull Request Review & Forge Providers](internals/github-pr-review.md)**
-- **[Direct File Editing & Creation](internals/file-editing.md)**
 - **[Harness Editing & Agent Dispatch](internals/agent-editing.md)**
+- **[Threads & Multi-Turn Conversations](internals/threads.md)**
+- **[Direct File Editing & Creation](internals/file-editing.md)**
 - **[Editor Virtualization & Caret Engine](internals/editor-virtualization.md)**
 - **[Image Viewer Architecture](internals/image-viewer.md)**
 - **[File Updates & In-Place Tab Reloading](internals/file-reload-and-updates.md)**

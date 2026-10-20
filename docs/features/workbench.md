@@ -26,6 +26,24 @@ Hover a row for its actions:
 
 A status dot shows workspaces that are **running**, **starting**, or **failed** (hover for the error). Up to 50 unpinned entries are kept.
 
+---
+
+## Keyboard Shortcuts & Controls
+
+| Shortcut / Control | Context | Action |
+| :--- | :--- | :--- |
+| `/` | Workbench Page | Focus the path / PR URL input box |
+| `Tab` | Path Input | Complete into the highlighted folder suggestion |
+| `↑` / `↓` | Path Suggestions | Navigate up / down through folder suggestions |
+| `Enter` | Path Input / Suggestion | Open the entered folder, PR URL, or highlighted suggestion |
+| `Esc` | Path Suggestions / Theme | Dismiss folder suggestions or restore previous theme |
+| `Cmd/Ctrl + Click` | Recent Workspaces | Open workspace in a new browser tab |
+| `☆` / `★` | Workspace Row | Pin workspace to the top of the list, or unpin |
+| `■` | Workspace Row | Stop running workspace child process and free RAM |
+| `✕` | Workspace Row | Stop workspace and remove from list |
+| `▦` | Workspace Header | Return to the Review Workbench from any open workspace |
+| `Palette button` / `Arrow keys` | Status Bar | Preview and select workbench color theme |
+
 ## Pull requests
 
 A pull request always opens as a `git worktree` of a local clone of its repository: a separate checkout that shares the clone's history, so opening a PR costs a checkout and never a fresh clone. The PR is checked out again each time it is opened, so it is always current, and the worktree is removed when the workspace stops. Your clone's own branch and working tree are not touched. Unsubmitted review drafts are kept across reopenings.

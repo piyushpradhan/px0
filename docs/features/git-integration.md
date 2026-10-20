@@ -36,6 +36,7 @@ The sidebar's git panel is the one part of this feature that *does* write to the
 - **Side-by-Side & Unified Diff Modes**:
   - **Side-by-Side (Split)**: View original `HEAD` code on the left and active working-tree code on the right with synchronized scrolling.
   - **Unified**: View changes inline with consecutive additions and deletions.
+- **Intra-Line Character Diff Highlighting**: Powered by a token-level Myers diff algorithm with sub-character refinement. Exact modified characters and words are highlighted with distinct contrast within changed lines across both split and unified layouts, while insertion carets pinpoint where text was inserted relative to counterpart lines.
 - **Whitespace Diff Filtering**: Toggle whitespace trimming to hide trivial indentation and trailing space differences when reviewing significant logic changes.
 - **Direct Agent Editing from Diffs**: Select any modified or added line in the diff view and trigger an AI agent edit (`Alt+E`) to refine or correct the change on the spot.
 - **Battery and Focus Awareness**: The live stream automatically suspends when the browser tab is hidden (`document.visibilityState === 'hidden'`), conserving CPU cycles and laptop battery. When you switch back to px0, it instantly reconnects and queries `/api/git/refresh` to catch any changes made while the window was in the background.

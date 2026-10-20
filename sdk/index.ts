@@ -26,16 +26,50 @@ export interface Meta {
   git: boolean;
   gitChanges: number;
   gitFiles: string[];
-  githubToken: boolean;
+  forge: ForgeMeta | null;
   lspServers: string[];
   metrics: Metrics;
   version: string;
   basePath: string;
+  workbench: string;
   agent: string;
   agentModel: string;
   agentPinned: boolean;
   agents: Harness[];
   pr?: PRMeta;
+}
+
+export interface ForgeInfo {
+  name: string;
+  label: string;
+  tokenKey: string;
+  tokenCategory: string;
+  tokenHint: string;
+}
+
+export interface TokenField {
+  key: string;
+  label: string;
+  placeholder: string;
+  hint: string;
+}
+
+export interface TokenSetup {
+  url: string;
+  steps: string[];
+  cli?: string;
+  env: string;
+  hostKey?: string;
+  extra?: TokenField;
+  readonly?: string;
+}
+
+export interface ForgeMeta {
+  info: ForgeInfo;
+  host: string;
+  hasToken: boolean;
+  source: string;
+  setup: TokenSetup;
 }
 
 export interface Metrics {
@@ -303,6 +337,20 @@ export interface GitStatus {
   commitsUrl?: string;
   ahead: number;
   behind: number;
+  /** PR checkout history was rewritten; updating the PR requires a force-push with a lease. */
+  rewritten?: boolean;
+}
+
+export interface GitSyncState {
+  code?: "diverged" | "in-progress";
+  branch: string;
+  upstream: string;
+  ahead: number;
+  behind: number;
+  inProgress?: "rebase" | "merge";
+  dirty: boolean;
+  pr?: number;
+  rewritten?: boolean;
 }
 
 export interface Harness {
@@ -427,6 +475,35 @@ export interface PRMeta {
   diffBaseWarning: string;
   headSHA: string;
   url: string;
+  files: Record<string, string>;
+}
+
+export type PRMergeMethod = "merge" | "squash" | "rebase";
+
+export interface PRMergeStatus {
+  state: "clean" | "unstable" | "conflicts" | "behind" | "blocked" | "draft" | "unknown" | "closed" | "merged";
+  reason?: string;
+  methods: PRMergeMethod[];
+  canMerge: boolean;
+  headSha: string;
+}
+
+export interface PRMergeMessage {
+  title: string;
+  message: string;
+}
+
+export interface PRMergePreview {
+  status: PRMergeStatus;
+  canMerge: boolean;
+  stale: boolean;
+  rewritten: boolean;
+  inProgress: "" | "rebase" | "merge";
+  unpushed: number;
+  defaults: Record<"merge" | "squash", PRMergeMessage>;
+  commits: UnpushedCommit[];
+  base: string;
+  hasInstruction: boolean;
 }
 
 export interface DraftComment {
@@ -808,6 +885,12 @@ export class Px0 {
   updateSettings = (patch: Record<string, unknown>, o?: CallOptions) =>
     this.post<Settings & { ok: true }>("settings", undefined, patch, o);
 
+  forge = {
+    /** Save a forge token and apply it to the running review. Some hosts also require an extra value. */
+    connect: (token: string, o: CallOptions & { extra?: string } = {}) =>
+      this.post<{ ok: true; saved: boolean; validated: boolean; writeAccess: boolean }>("forge/connect", undefined, { token, extra: o.extra }, o),
+  };
+
   session = (o?: CallOptions) => this.get<Session>("session", undefined, o);
   updateSession = (patch: Partial<Pick<Session, "tabs" | "active" | "openDirs">>, o?: CallOptions) =>
     this.post<Session>("session", undefined, patch, o);
@@ -891,7 +974,16 @@ export class Px0 {
     /** Fast-forward only. Throws Px0Error 409 if diverged or dirty. Talks to the remote: default timeout 5 min. */
     pull: (o?: CallOptions) => this.post<{ ok: true; message: string }>("git/pull", undefined, undefined, { timeout: 300_000, ...o }),
     /** Talks to the remote: default timeout 5 min. */
-    push: (o?: CallOptions) => this.post<{ ok: true }>("git/push", undefined, undefined, { timeout: 300_000, ...o }),
+    push: (o: CallOptions & { force?: boolean } = {}) =>
+      this.post<{ ok: true }>("git/push", undefined, { force: o.force }, { timeout: 300_000, ...o }),
+    /** Branch standing against its upstream, or the PR base. fetch refreshes the PR base from the remote. */
+    syncState: (o: CallOptions & { fetch?: boolean } = {}) =>
+      this.get<GitSyncState>("git/sync-state", { fetch: o.fetch }, o),
+    /** Ask the selected harness to rebase/merge, or finish the operation in progress. Await with agent.wait(). */
+    syncAgent: (strategy: "rebase" | "merge", o?: CallOptions) =>
+      this.post<AgentJob>("git/sync-agent", undefined, { strategy }, o),
+    /** Abort the checkout's in-progress rebase or merge. */
+    abort: (o?: CallOptions) => this.post<{ ok: true }>("git/abort", undefined, undefined, o),
     /** Ask the selected harness for a commit message; stages everything if nothing is staged. Await with agent.wait(). */
     commitMessage: (o?: CallOptions) => this.post<AgentJob>("git/commit-message", undefined, undefined, o),
   };
@@ -965,6 +1057,14 @@ export class Px0 {
 
   pr = {
     meta: (o?: CallOptions) => this.get<PRMeta>("pr/meta", undefined, o),
+    /** Live forge mergeability, checkout state and default commit messages. */
+    mergeStatus: (o?: CallOptions) => this.get<PRMergePreview>("pr/merge-status", undefined, o),
+    /** Merge the reviewed PR head on the forge. */
+    merge: (method: PRMergeMethod, o: CallOptions & Partial<PRMergeMessage> = {}) =>
+      this.post<{ ok: true; sha: string; message: string }>("pr/merge", undefined, { method, title: o.title, message: o.message }, o),
+    /** Ask the harness to draft a merge/squash commit message. Await with agent.wait(). */
+    mergeMessage: (method: "merge" | "squash", o: CallOptions & Partial<PRMergeMessage> & { instruction?: string } = {}) =>
+      this.post<AgentJob>("pr/merge-message", undefined, { method, title: o.title, message: o.message, instruction: o.instruction }, o),
     /** Comments already posted on the forge. */
     comments: (o?: CallOptions) =>
       this.get<{ issueComments: PRComment[]; reviewComments: PRComment[] }>("pr/existing-comments", undefined, o),

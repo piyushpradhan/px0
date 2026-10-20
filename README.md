@@ -6,7 +6,7 @@
 
 ---
 
-px0 is an IDE built for reviewing AI-generated code, optimized for speed. It turns your browser into a zero-latency console with native Git and GitHub integrations, instant search across massive codebases, and seamless handoff to local AI coding harnesses.
+px0 is a review workbench and speed-first IDE built for AI-generated code. It turns your browser into a zero-latency console with native Git and GitHub integrations, instant search across massive codebases, in-place quick fixes, and seamless handoff to local AI coding harnesses.
 
 As AI agents author more code directly from the terminal, engineering productivity is no longer constrained by how fast you type - it is constrained by how fast you can review, navigate, and verify changes. px0 replaces heavy, multi-gigabyte editing suites with an instant, distraction-free environment built specifically for this review loop.
 
@@ -19,15 +19,15 @@ See full performance benchmarks and comparisons at [px0.ai/benchmarks](https://p
 
 ## Features
 
-- Review workbench: Run `px0` with no arguments to open any directory or pull request from one page, browse the filesystem, and reopen recent and pinned reviews later.
-- Pull request reviews & Git panel: Review GitHub, GitLab, Gitea/Forgejo and Bitbucket Cloud pull requests directly (`px0 <pr-url>`), inspect scoped merge-base diffs, draft inline review comments, have your coding harness resolve conflicts, merge with any method the repository allows, expand recent commits to browse what each one changed, and stage, commit, or push from the browser.
+- Review workbench: Run `px0` with no arguments to open a unified launchpad on a single port, browse projects, and keep unsubmitted review drafts across sessions.
+- Pull request reviews & Git control: Review GitHub, GitLab, Gitea/Forgejo, and Bitbucket Cloud PRs directly (`px0 <pr-url>`), inspect scoped merge-base diffs, draft inline comments, 1-click agentic rebase for conflict resolution, squash and merge, browse commit diffs, and stage, commit, or push from the browser.
+- Multi-turn agent threads: Anchor conversations to code ranges (`Alt+T`), stream live tool execution over Server-Sent Events, queue batch inline edits across files (`Alt+E`), and dispatch to Claude Code, Cursor Agent, Antigravity, OpenCode, Codex, Aider, or Goose.
 - Unpushed commit review: Read the commits your branch is ahead of its tracking branch by, one file diff at a time, before you push them.
-- AI coding harness integration: Dispatch edits directly to Claude Code, Gemini CLI, Cursor Agent, Antigravity, OpenCode, Codex, Aider, or Goose with live reloading.
-- Quick edits: Edit and save a file in the browser (`Cmd/Ctrl+E`, `Cmd/Ctrl+S`) with word wrap and unsaved-change protection, and create new files and folders from the sidebar.
-- Fast navigation: Fuzzy file search, symbol outline, and workspace regex search in milliseconds.
-- Remote-first: Run on any remote server, VM, or container and browse locally without SSH key setups or remote daemons.
-- Virtual rendering: Opens 400,000-line files smoothly by mounting only visible rows; frees memory back to the OS after 15 seconds of inactivity.
-- Rich code viewer: 14 built-in themes, rendered Markdown with Mermaid diagrams, CSV/TSV table view, image inspector, and optional zero-config LSP for Go-to-Definition and hover.
+- In-place quick edits: Edit and save a file in the browser (`Cmd/Ctrl+E`, `Cmd/Ctrl+S`) with unsaved-change protection when an agent prompt is overkill.
+- Fast navigation: Fuzzy file search (`Cmd/Ctrl+P`), symbol outline (`Cmd/Ctrl+Shift+O`), and workspace regex search (`Cmd/Ctrl+Shift+F`) in milliseconds.
+- Remote-first: Spin up on any remote server, VM, or container in `< 1 ms` (`-host 0.0.0.0`) with sandboxed traversal guards and origin verification—no SSH keys, tunnels, or remote daemons required.
+- Virtual rendering: Opens 400,000-line files smoothly by mounting only visible rows (~60 DOM rows); frees memory back to the OS after 15 seconds of inactivity.
+- Rich code viewer: 14 built-in themes, rendered Markdown with Mermaid diagrams, CSV/TSV table view, image inspector, and optional zero-config LSP.
 
 ## Installation
 
@@ -142,18 +142,10 @@ make build
 
 - [Docs](https://px0.ai/docs)
 - [TypeScript SDK](sdk/README.md)
-- [Benchmarks](https://px0.ai/#bench)
+- [Benchmarks](https://px0.ai/benchmarks)
 - [Blog](https://px0.ai/blog)
 - [Changelog](https://px0.ai/changelog)
 - [Partners](https://px0.ai/design-partners)
-
-## Design Partners
-
-When AI coding agents generate large diffs across repositories every day, code authoring is no longer the bottleneck. Verification and review are.
-
-We are looking for engineering teams (10+ engineers or teams running active agent workflows) as design partners. Partners receive direct Slack Connect access to the core team, rapid turnaround on custom harness integrations, and direct input on the roadmap.
-
-Learn more on the [Design Partners page](https://px0.ai/design-partners).
 
 ## License
 

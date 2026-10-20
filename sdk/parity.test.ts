@@ -46,6 +46,13 @@ describe("editor parity", { skip: !bin && "run npm run test:e2e or set PX0_BIN",
 
   test("reads, previews and settings retain the editor's complete response shapes", async () => {
     assertShape(await px0.meta(), "Meta");
+    const sync = await px0.git.syncState();
+    assertShape(sync, "GitSyncState");
+    assert.deepEqual(sync, await f.direct("git/sync-state"));
+    assert.equal(sync.branch, "main");
+    assert.equal(sync.upstream, "origin/main");
+    assert.equal(sync.ahead, 1);
+    assert.equal(sync.dirty, true);
     assertShape(await px0.metrics(), "Metrics");
     assert.deepEqual(await px0.tree(), (await f.direct("tree")).children);
     assert.deepEqual(await px0.find("ajs", { limit: 5 }), (await f.direct("find", { q: "ajs", limit: 5 })).results);
