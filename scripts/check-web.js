@@ -48,6 +48,18 @@ try {
   }
 }
 
+for (const bundle of ['web/app.js', 'web/workbench.js']) {
+  const bundlePath = path.join(rootDir, bundle);
+  if (fs.existsSync(bundlePath)) {
+    try {
+      execFileSync('node', ['--check', bundlePath], { stdio: 'pipe' });
+    } catch (err) {
+      console.error(`[check-web] Syntax error in ${bundle}:`, err.stderr?.toString() || err.message);
+      hasError = true;
+    }
+  }
+}
+
 if (hasError) {
   process.exit(1);
 }

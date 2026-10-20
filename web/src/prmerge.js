@@ -52,6 +52,9 @@ export function initPRMerge(c) {
     ctx.onChange();
   });
   $('#pr-merge-state')?.addEventListener('click', onPillClick);
+  $('#pr-rebase-ai')?.addEventListener('click', () => {
+    emit('pr:resolve');
+  });
   $('#pr-merge')?.addEventListener('click', onMergeClick);
   $('#pr-merge-caret')?.addEventListener('click', e => { e.stopPropagation(); toggleMenu(); });
   document.addEventListener('click', e => { if (!e.target.closest?.('#pr-merge-group')) toggleMenu(false); });
@@ -148,20 +151,10 @@ function onPillClick() {
   else refreshMergeStatus();
 }
 
-// The split button's main half: what clicking it does right now.
+// The split button's main half: always opens the merge dialog to review and merge.
 function mainAction() {
   if (sync.running) return { label: 'Rebasing...', disabled: true, title: 'Wait for the rebase to finish' };
-  if (sync.inProgress) return { label: 'Resolve conflicts', tone: 'warn', title: `Finish or abort the ${sync.inProgress} first`, run: () => emit('pr:resolve') };
-  if (sync.rewritten) return { label: 'Force-push first', tone: 'warn', title: 'The PR still holds the old commits; force-push the rebased branch before merging', run: () => emit('pr:force-push') };
-  if (info?.stale) return { label: 'Pull new commits', tone: 'warn', title: 'The PR has commits this checkout has not seen; pull and review them before merging', run: () => emit('pr:pull') };
   const m = METHODS[chosenMethod()];
-  switch (state()) {
-    case 'conflicts': return { label: 'Resolve conflicts', tone: 'warn', title: `Rebase onto or merge ${baseBranch()} with your coding harness`, run: () => emit('pr:resolve') };
-    case 'behind': return { label: 'Update branch', tone: 'warn', title: `Bring the branch up to date with ${baseBranch()}`, run: () => emit('pr:resolve') };
-    case 'unknown': return { label: m.button, disabled: true, title: 'Still checking whether this PR can merge' };
-    case 'blocked':
-    case 'draft': return { label: m.button, disabled: true, title: info.status.reason || 'This PR cannot merge yet' };
-  }
   return { label: m.button, title: `${m.label} into ${baseBranch()} (review the commit first)`, run: () => openDialog(chosenMethod()) };
 }
 
@@ -175,6 +168,12 @@ function renderPRMerge() {
       pillEl.textContent = p.text;
       pillEl.title = p.title + (p.act ? '' : ' (click to refresh)');
     }
+  }
+  const rebaseBtn = $('#pr-rebase-ai');
+  if (rebaseBtn) {
+    const showRebase = p?.act === 'resolve' && !sync.running;
+    rebaseBtn.hidden = !showRebase;
+    rebaseBtn.disabled = !!sync.running;
   }
   const group = $('#pr-merge-group');
   if (!group) return;
@@ -242,10 +241,26 @@ function initDialog() {
   $('#pr-merge-cancel')?.addEventListener('click', closeDialog);
   $('#pr-merge-confirm')?.addEventListener('click', confirmMerge);
   $('#pr-merge-ai')?.addEventListener('click', rewriteWithAI);
+  $('#pr-merge-ai-checkbox')?.addEventListener('change', e => {
+    if (e.target.checked) {
+      $('#pr-merge-ai-row').hidden = false;
+      rewriteWithAI();
+    } else {
+      drafts[method] = { ...(info?.defaults?.[method] || { title: '', message: '' }) };
+      fillCommit();
+      if (method === 'squash') $('#pr-merge-ai-row').hidden = true;
+    }
+  });
   $('#pr-merge-reset')?.addEventListener('click', e => {
     e.preventDefault();
     drafts[method] = { ...(info?.defaults?.[method] || { title: '', message: '' }) };
     fillCommit();
+    const cb = $('#pr-merge-ai-checkbox');
+    if (cb) cb.checked = false;
+    if (method === 'squash') {
+      const row = $('#pr-merge-ai-row');
+      if (row) row.hidden = true;
+    }
   });
   $('#pr-merge-instructions-link')?.addEventListener('click', e => {
     e.preventDefault();
@@ -268,10 +283,13 @@ function initDialog() {
 async function openDialog(m) {
   // Re-read right before showing it: what the dialog says is what merges.
   await refreshMergeStatus();
+  if (!m || !allowed().includes(m)) m = chosenMethod();
   if (!info?.canMerge || !allowed().includes(m)) return;
   method = m;
   drafts = {};
   for (const k of Object.keys(info.defaults || {})) drafts[k] = { ...info.defaults[k] };
+  const cb = $('#pr-merge-ai-checkbox');
+  if (cb) cb.checked = false;
   setPRMergeErr('');
   renderDialog();
   mergeModal().hidden = false;
@@ -309,8 +327,15 @@ function renderDialog() {
   fillCommit();
   const instr = $('#pr-merge-instructions-note');
   if (instr) instr.hidden = !info.hasInstruction;
-  const hasHarness = (S.meta?.agents || []).some(h => h.installed);
-  $('#pr-merge-ai-row').hidden = !hasHarness;
+  const hasHarness = (S.meta?.agents || []).some(h => h.installed) || !!S.meta?.agent;
+  const isSquash = method === 'squash';
+  const cbWrap = $('#pr-merge-ai-checkbox-wrap');
+  if (cbWrap) cbWrap.hidden = !isSquash || !hasHarness;
+  if (isSquash) {
+    $('#pr-merge-ai-row').hidden = !hasHarness || !$('#pr-merge-ai-checkbox')?.checked;
+  } else {
+    $('#pr-merge-ai-row').hidden = !hasHarness;
+  }
 
   const list = $('#pr-merge-commit-list');
   list.hidden = method !== 'rebase';
@@ -392,6 +417,9 @@ async function rewriteWithAI() {
   if (aiJob || method === 'rebase') return;
   saveDraft();
   const btn = $('#pr-merge-ai');
+  const cb = $('#pr-merge-ai-checkbox');
+  const cbText = $('.pr-merge-checkbox-text');
+  if (cb && method === 'squash') cb.checked = true;
   const d = drafts[method] || {};
   setPRMergeErr('');
   let job;
@@ -401,6 +429,7 @@ async function rewriteWithAI() {
     });
   } catch (e) {
     setPRMergeErr(e.message || 'Could not start the harness');
+    if (cb && method === 'squash') cb.checked = false;
     return;
   }
   aiJob = job.id;
@@ -411,6 +440,7 @@ async function rewriteWithAI() {
     aiJob = 0;
     btn.disabled = false;
     btn.textContent = 'Rewrite with AI';
+    if (cbText) cbText.textContent = 'Rewrite commit message with AI';
     if (!mergeModal().hidden) renderWarnings();
   };
   const poll = async () => {
@@ -421,22 +451,27 @@ async function rewriteWithAI() {
       j = { running: false, error: e.message };
     }
     if (j.running) {
-      btn.textContent = `Rewriting... (${Math.round((j.ms || 0) / 1000)}s)`;
+      const statusText = `Rewriting... (${Math.round((j.ms || 0) / 1000)}s)`;
+      btn.textContent = statusText;
+      if (cbText && method === 'squash') cbText.textContent = statusText;
       setTimeout(poll, 700);
       return;
     }
     reset();
     if (j.error) {
       setPRMergeErr((j.harness || 'harness') + ': ' + j.error);
+      if (cb && forMethod === 'squash') cb.checked = false;
       return;
     }
     const msg = splitMessage(j.stdout || j.log || '');
     if (!msg.title) {
       setPRMergeErr('The harness returned an empty message.');
+      if (cb && forMethod === 'squash') cb.checked = false;
       return;
     }
     drafts[forMethod] = msg;
     if (method === forMethod) fillCommit();
+    if (cb && forMethod === 'squash') cb.checked = true;
   };
   setTimeout(poll, 400);
 }

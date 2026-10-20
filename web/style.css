@@ -2824,8 +2824,9 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 
 /* ---------- PR review (web/src/pr.js) ---------- */
 .pr-bar {
+  flex: none;
   display: flex; flex-direction: column; gap: 6px;
-  padding: 6px 12px; background: var(--bg2); border-bottom: 1px solid var(--line);
+  padding: 6px 12px; background: var(--bg2); border-top: 1px solid var(--line);
 }
 .pr-bar[hidden] { display: none; }
 .pr-bar-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -3034,6 +3035,21 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 }
 .pr-merge-state:hover { background: color-mix(in srgb, var(--tone) 22%, transparent); }
 
+.pr-btn-rebase-ai {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  height: 20px; padding: 0 8px; font: 600 11px var(--ui);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid var(--accent); color: var(--accent-fg);
+  border-radius: 999px; cursor: pointer; transition: background 0.12s ease;
+}
+.pr-btn-rebase-ai[hidden] { display: none; }
+.pr-btn-rebase-ai:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+.pr-btn-rebase-ai .footer-btn-icon {
+  width: 11px; height: 11px;
+}
+
 .pr-merge-group { position: relative; display: flex; flex: none; }
 .pr-merge-group[hidden] { display: none; }
 .pr-review-row .pr-btn-merge {
@@ -3050,7 +3066,7 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
   padding: 0 6px; margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0;
 }
 .pr-merge-menu {
-  position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; width: 300px;
+  position: absolute; bottom: calc(100% + 4px); right: 0; z-index: 60; width: 300px;
   display: flex; flex-direction: column; padding: 4px;
   background: var(--bg2); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
 }
@@ -3093,6 +3109,20 @@ body.hide-git-gutter .g-git, body.hide-git-gutter [class*="git-"] { display: non
 .pr-merge-warn.block { border-left-color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); }
 .pr-merge-commit { display: flex; flex-direction: column; gap: 5px; }
 .pr-merge-commit[hidden] { display: none; }
+.pr-merge-ai-checkbox-wrap {
+  display: flex; align-items: center; gap: 8px; margin: 2px 0 6px 0;
+}
+.pr-merge-ai-checkbox-wrap[hidden] { display: none; }
+.pr-merge-checkbox-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 12px var(--ui); color: var(--fg); cursor: pointer; user-select: none;
+}
+.pr-merge-checkbox-label input[type="checkbox"] {
+  cursor: pointer; accent-color: var(--accent); width: 14px; height: 14px; margin: 0;
+}
+.pr-merge-checkbox-text {
+  font-weight: 500;
+}
 .pr-merge-label { font: 600 11px var(--ui); color: var(--faint); }
 .pr-merge-label-row { display: flex; align-items: baseline; justify-content: space-between; margin-top: 4px; }
 .pr-merge-input {

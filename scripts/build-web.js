@@ -46,6 +46,12 @@ function buildWithBun(entryFile, outFile) {
     cwd: rootDir,
     stdio: 'inherit'
   });
+  try {
+    execFileSync(process.execPath, ['--check', outFile], { stdio: 'pipe' });
+  } catch (err) {
+    console.error(`[build-web] Syntax error in generated bundle ${path.basename(outFile)}:`, err.stderr?.toString() || err.message);
+    process.exit(1);
+  }
 }
 
 /**
@@ -99,13 +105,14 @@ function buildWithNode(entryFile, outFile) {
       else declaredIn.set(m[1], rel);
     }
 
-    // Strip ES import declarations
-    src = src.replace(/^\s*import\s+.*?;?\s*$/gm, '');
+    // Strip ES import declarations (single and multi-line)
+    src = src.replace(/^\s*import(?:\s+[\s\S]*?from\s+)?\s*['"][^'"]+['"];?\s*$/gm, '');
 
     // Replace `export const X =` / `export function X(` / `export async function X(` / `export let X`
     src = src.replace(/^\s*export\s+(?:async\s+)?function\s+/gm, (m) => m.replace('export ', ''));
     src = src.replace(/^\s*export\s+(const|let|var)\s+/gm, '$1 ');
-    src = src.replace(/^\s*export\s*\{[^}]*\};?\s*$/gm, '');
+    src = src.replace(/^\s*export\s*\{[\s\S]*?\}(?:\s*from\s*['"][^'"]+['"])?;?\s*$/gm, '');
+    src = src.replace(/^\s*export\s+\*\s+from\s+['"][^'"]+['"];?\s*$/gm, '');
     src = src.replace(/^\s*export\s+default\s+.*?;?\s*$/gm, '');
 
     combined += `// --- File: ${rel} ---\n` + src.trim() + '\n\n';
@@ -119,6 +126,13 @@ function buildWithNode(entryFile, outFile) {
 
   combined += '})();\n';
   fs.writeFileSync(outFile, combined, 'utf8');
+
+  try {
+    execFileSync(process.execPath, ['--check', outFile], { stdio: 'pipe' });
+  } catch (err) {
+    console.error(`[build-web] Syntax error in generated bundle ${path.basename(outFile)}:`, err.stderr?.toString() || err.message);
+    process.exit(1);
+  }
 }
 
 /**
