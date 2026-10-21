@@ -1,8 +1,8 @@
 # Git Forge PR Review & Provider Architecture
 
 This document describes the design and implementation of px0's pull request review feature:
-- the `GitProvider` abstraction layer ([`provider.go`](../../provider.go)) and its implementations for GitHub ([`github.go`](../../github.go)), GitLab ([`gitlab.go`](../../gitlab.go)), Gitea / Forgejo ([`gitea.go`](../../gitea.go)) and Bitbucket Cloud ([`bitbucket.go`](../../bitbucket.go)), with the HTTP plumbing the last two share ([`forgehttp.go`](../../forgehttp.go));
-- connecting a forge token from the UI ([`forgeconnect.go`](../../forgeconnect.go));
+- the `GitProvider` abstraction layer and its implementations for GitHub, GitLab, Gitea / Forgejo, and Bitbucket Cloud ([`forge.go`](../../forge.go));
+- connecting a forge token from the UI ([`forge.go`](../../forge.go), [`server.go`](../../server.go));
 - the checkout lifecycle, push/pull, merging and progress reporting ([`pr.go`](../../pr.go)), and merge-base diffing ([`git.go`](../../git.go));
 - the frontend: the review bar and comments ([`web/src/pr.js`](../../web/src/pr.js), [`web/src/linecomment.js`](../../web/src/linecomment.js)), merging ([`web/src/prmerge.js`](../../web/src/prmerge.js)), and the Connect dialog ([`web/src/forgeconnect.js`](../../web/src/forgeconnect.js)).
 
@@ -22,7 +22,7 @@ Two core px0 tenets shape pull request reviews:
 
 ## 2. Extensible Forge Architecture (`GitProvider`)
 
-To support multiple git forges (GitHub, GitLab, Gitea/Forgejo and Bitbucket Cloud today) without entangling core review logic, forge interactions are abstracted behind the `GitProvider` interface in [`provider.go`](../../provider.go):
+To support multiple git forges (GitHub, GitLab, Gitea/Forgejo and Bitbucket Cloud today) without entangling core review logic, forge interactions are abstracted behind the `GitProvider` interface in [`forge.go`](../../forge.go):
 
 ```go
 type GitProvider interface {
@@ -53,7 +53,7 @@ Nothing outside a provider names a forge host. `newForgeGit` turns the provider 
 
 `PRTarget.Host` carries the forge host, which a self-hosted GitLab needs. `PRTarget.Owner` may be a nested group path (`group/sub`), so `remoteMatchesRepo` compares a remote's whole repository path rather than its last two segments. Only a local-path remote matches by suffix.
 
-### GitLab (`gitlab.go`)
+### GitLab (`forge.go`)
 
 - **URLs**: any host with GitLab's `/-/merge_requests/<n>` path. The API root is `https://<host>/api/v4`, and the project is addressed by its URL-encoded full path.
 - **Tokens**: `gitlab.token` and `GITLAB_TOKEN` are scoped to `gitlabTokenHost()`, which is gitlab.com or `GITLAB_HOST`. Any other host only gets `glab config get token --host <host>`. Without this, an arbitrary merge request URL could collect a gitlab.com token. API calls send `Authorization: Bearer`, and git uses Basic auth with `oauth2:<token>`.
@@ -61,9 +61,9 @@ Nothing outside a provider names a forge host. `newForgeGit` turns the provider 
 - **Merging**: `Merge` sends `squash`, the reviewed `sha`, and one message (title and body joined) as `squash_commit_message` or `merge_commit_message`. A 409 maps to `ErrPRHeadMoved`, and 405, 406, and 422 map to `ErrPRNotMergeable`. `MergeStatus.CanMerge` is the merge request's own `user.can_merge`.
 - **Push access**: Developer (30) or higher, on the project or through its group.
 
-### Gitea (`gitea.go`) and Bitbucket Cloud (`bitbucket.go`)
+### Gitea and Bitbucket Cloud (`forge.go`)
 
-Both use `forgehttp.go`'s `forgeAPI`, which handles one JSON request, decodes a 2xx into the caller's struct, and turns anything else into an error with the forge's own message and the status code. Status codes are what each `Merge` uses to tell `ErrPRHeadMoved` from `ErrPRNotMergeable`. Tests point `giteaAPIBase` and `bitbucketAPIBase` at fake servers.
+Both use `forge.go`'s `forgeAPI`, which handles one JSON request, decodes a 2xx into the caller's struct, and turns anything else into an error with the forge's own message and the status code. Status codes are what each `Merge` uses to tell `ErrPRHeadMoved` from `ErrPRNotMergeable`. Tests point `giteaAPIBase` and `bitbucketAPIBase` at fake servers.
 
 - **Gitea**: the API root is `https://<host>/api/v1` and auth is `Authorization: token <t>`. The token is scoped to `giteaTokenHost` (`gitea.host`, then `GITEA_HOST`, then codeberg.org), for the same reason as GitLab's. `SubmitReview` is one call to `/pulls/{n}/reviews`, with `new_position`/`old_position` line numbers. Review comments carry no reply link, so `FetchComments` threads them by path and line, oldest first (`sortComments`), and `ReplyToReviewComment` posts a one-comment `COMMENT` review on that line. Status is `mergeable` plus title-prefix drafts. `Merge` sends `Do` (`merge`, `squash`, `rebase`, or `fast-forward-only` when only that is enabled) with `head_commit_id`. The provider is registered last because its URL pattern is the loosest. GitHub's `/pull/` (singular) never matches it, and `github.com` is excluded explicitly.
 - **Bitbucket**: the API root is `https://api.bitbucket.org/2.0`. `PRHeadRef` is `""`, so checkout takes the clone path. The API returns 12-character hashes, which `headSHA` expands to full ones through the commit endpoint, so stale-head checks compare like with like. Conflicts come from `diffstat` entries whose status contains "conflict". Allowed methods come from the destination branch's `merge_strategies`, mapped through `bitbucketStrategies`. `Merge` checks the head itself, since Bitbucket takes no SHA guard, and treats a 202 (async merge) as accepted. Comment threads follow `parent` links up to the root. An access token uses `Bearer` for the API and `x-token-auth` for git. An API token with an email uses Basic `email:token` for the API and `x-bitbucket-api-token-auth` for git. `CheckPushAccess` uses `/user/permissions/repositories`, which only an API token can call, and fails closed otherwise.
@@ -97,7 +97,7 @@ provider, target, ok := DetectPRURL(arg0)
 sequenceDiagram
     participant CLI as CLI (main.go)
     participant PR as PR Engine (pr.go)
-    participant Prov as GitProvider (github.go, gitlab.go, ...)
+    participant Prov as GitProvider (forge.go)
     participant Git as Host Git CLI
 
     CLI->>PR: checkoutPR(ctx, provider, target, cwd, onProgress)
@@ -143,7 +143,7 @@ Each provider's `ResolveToken(cfg, target)` checks px0 Settings, then the enviro
 
 Host scoping matters because a PR URL can name any host. Without it, a crafted link to `evil.example/-/merge_requests/1` would receive the user's gitlab.com token. glab's tokens are already stored per host, so they need no extra scoping. `checkoutPR` keeps the token and where it came from (`prSession.tokenSource`).
 
-### Connecting from the UI (`forgeconnect.go`)
+### Connecting from the UI (`forge.go`, `server.go`)
 
 `/api/meta` carries `forge`, built by `forgeMeta()`: the provider's `Info`, the host, `hasToken` and `source`, and `TokenSetup(host)`. That is the token page URL, the steps to follow there, the environment variable and CLI alternatives, the `HostKey` setting for multi-host forges, and an optional `Extra` field (Bitbucket's email). In a PR session the forge is the PR's. In a plain workspace it is whichever forge `ForgeForRemote` recognizes from the branch's remote. `web/src/forgeconnect.js` renders it with no forge-specific code of its own.
 
@@ -201,7 +201,7 @@ func gitMergeBase(root, a, b string) string
 ## 6. Draft Comments, Submission & Batch Apply
 
 ### Drafts and the Session File
-Drafts are held in `prSession.comments` and mirrored to the workspace session file by `sessionManager` ([`session.go`](../../session.go)). Adding or deleting a draft writes `WorkspaceSession.Drafts`; a successful submit clears it. `SetPR` switches the server to the PR's own session file (`newPRSessionManager`), and when `prSession.comments` is empty it loads the saved drafts and advances `nextID` past them.
+Drafts are held in `prSession.comments` and mirrored to the workspace session file by `sessionManager` ([`server.go`](../../server.go)). Adding or deleting a draft writes `WorkspaceSession.Drafts`; a successful submit clears it. `SetPR` switches the server to the PR's own session file (`newPRSessionManager`), and when `prSession.comments` is empty it loads the saved drafts and advances `nextID` past them.
 
 The file lives at `$XDG_STATE_HOME/px0/sessions/pr-<id>.json`, falling back to `~/.px0/sessions/` or `os.TempDir()/px0-sessions/`. `<id>` is the PR's workbench item ID (`wbPRItem`, from the lowercased `provider/owner/repo#n`), not the base path or checkout root: every opening checks the PR out into a new temporary directory, so a root-keyed file would never be found again. Drafts therefore carry over between runs whether the PR is opened with `px0 <pr-url>` or from the [workbench](workbench.md). If the PR's file has no drafts and the base-path file (`sessionFilePath`, where older versions kept them) does, `SetPR` moves them across.
 

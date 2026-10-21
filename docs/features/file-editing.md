@@ -20,8 +20,12 @@ px0 can edit a file in place and create new files and folders from the browser. 
 | `Tab` | Inserts four spaces. With a multi-line selection, indents every selected line. |
 | `Enter` | Keeps the indentation of the current line. |
 | `Cmd/Ctrl+S` | Saves the file. |
-| `Esc` | Leaves edit mode. |
+| `Cmd/Ctrl+F` | Opens the in-editor find bar to search within the buffer. |
+| `Enter` / `Shift+Enter` | In find bar: cycles to the next / previous hit and centers the match in view. |
+| `Cmd/Ctrl+G` | Jump to line within the editor buffer. |
+| `Esc` | Closes find bar (returning focus to the editor), or leaves edit mode if find is closed. |
 
+- **In-editor find** (`Cmd/Ctrl+F`) operates directly on the active textarea buffer. It calculates match counts, highlights hits on the scrollbar track, and navigates between hits with `Enter` or Next/Prev buttons, automatically selecting the matching range and centering it in the editor.
 - **Word wrap** follows the same setting as the code view (`editor.wordWrap`, `Alt+Z`). Long lines wrap at the editor edge and the gutter number stays aligned with the first row of each wrapped line.
 - **Unsaved changes** show a dot on the tab. Closing a dirty tab or the browser window asks first.
 - **Switching tabs** while editing keeps your unsaved text and scroll position per file. Opening a diff for the file you are editing leaves edit mode and shows the diff; the unsaved text is kept for when you edit again.

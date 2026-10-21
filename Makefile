@@ -1,4 +1,4 @@
-.PHONY: all build web test dist publish clean help
+.PHONY: all build web build-web test dist publish clean help
 
 VERSION ?= $(shell cat VERSION 2>/dev/null | tr -d ' \r\n')
 # Support 'make publish 0.2.0' where target argument is passed as next goal
@@ -42,6 +42,8 @@ help:
 web:
 	@echo "Bundling web assets..."
 	@node ./scripts/build-web.js
+
+build-web: web
 
 build: web
 	@echo "Building px0 for local system..."

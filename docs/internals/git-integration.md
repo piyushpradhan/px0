@@ -118,7 +118,7 @@ Both layouts share the same hunk-header, line-number, marker, and code-cell buil
 
 ## 5. Real-Time Streaming & Adaptive Monitoring Engine
 
-To keep git statuses, sidebar badges, and editor gutter diff indicators in sync without requiring manual page reloads or full workspace re-indexing, px0 uses a hybrid real-time monitoring engine (`git_watcher.go` and `web/src/gitstream.js`).
+To keep git statuses, sidebar badges, and editor gutter diff indicators in sync without requiring manual page reloads or full workspace re-indexing, px0 uses a hybrid real-time monitoring engine (`git.go` and `web/src/gitstream.js`).
 
 ### Design Constraints: Small vs. Massive Repositories
 
@@ -275,11 +275,24 @@ The sidebar git panel (`web/src/gitpanel.js`) and the file tree's per-row stage 
 
 ### Staged-Path Tracking
 
-`gitStatusAndStagedAgainst` (`git.go`) extracts both working-tree status codes and staged paths (`xy[0] != '.'`) from a single `git status --porcelain=v2 -z -uall` invocation (with `gitStagedPaths` available as a standalone `git diff --name-only --cached -z` helper when only staged paths are needed), mapping each path through `repoRelKey` so staged state is keyed identically to status. `Index.gitStagedMap` and `Node.Staged` carry it alongside the existing `gitStatusMap`/`Node.Status`, populated in both `Index.Build()` and `Index.UpdateGitStatus()`. `UpdateGitStatus`'s "did anything change" check compares *both* maps — staging a file often leaves its collapsed status letter unchanged (a modified-and-unstaged `M` and a modified-and-staged `M` are the same letter), so comparing status alone would silently swallow a stage/unstage broadcast. `GitStatusPayload` (`git_watcher.go`) carries the resulting `Staged` map and the current `Branch` name (`gitCurrentBranch`) down the same SSE stream (`/api/stream`) that already pushes status; during worktree-only polls when `.git` control files have not changed, `GitWatcher` reuses the cached branch, ahead/behind, and recent-commit metadata from `lastSnap`.
+`gitStatusAndStagedAgainst` (`git.go`) extracts both working-tree status codes and staged paths (`xy[0] != '.'`) from a single `git status --porcelain=v2 -z -uall` invocation (with `gitStagedPaths` available as a standalone `git diff --name-only --cached -z` helper when only staged paths are needed), mapping each path through `repoRelKey` so staged state is keyed identically to status. `Index.gitStagedMap` and `Node.Staged` carry it alongside the existing `gitStatusMap`/`Node.Status`, populated in both `Index.Build()` and `Index.UpdateGitStatus()`. `UpdateGitStatus`'s "did anything change" check compares *both* maps — staging a file often leaves its collapsed status letter unchanged (a modified-and-unstaged `M` and a modified-and-staged `M` are the same letter), so comparing status alone would silently swallow a stage/unstage broadcast. `GitStatusPayload` (`git.go`) carries the resulting `Staged` map and the current `Branch` name (`gitCurrentBranch`) down the same SSE stream (`/api/stream`) that already pushes status; during worktree-only polls when `.git` control files have not changed, `GitWatcher` reuses the cached branch, ahead/behind, and recent-commit metadata from `lastSnap`.
 
-### Stage / Unstage / Commit
+### Stage / Unstage / Commit & Auto-Staging
 
-`gitStage`/`gitUnstage`/`gitCommit` (`git.go`) are thin wrappers around `git add -- <path>`, `git reset -- <path>`, and `git commit -m <message>`. An empty path to `gitStage` means "the served root itself", so **Stage All** reuses the same `/api/git/stage` endpoint with `path: "."` instead of a dedicated route. `gitCommit` checks `gitStagedPaths` before shelling out, so an empty index fails fast with "nothing staged to commit" rather than surfacing git's own message. All three endpoints (`handleGitStage`, `handleGitUnstage`, `handleGitCommit` in `server.go`) validate `path` through `s.safePath` — the same traversal guard `handleFile`/`handleRaw` use — and call `s.gitWatcher.Trigger()` on success so the SSE stream broadcasts immediately instead of waiting for the next poll tick.
+`gitStage`/`gitUnstage`/`gitCommit` (`git.go`) are thin wrappers around `git add -- <path>`, `git reset -- <path>`, and `git commit -m <message>`. An empty path to `gitStage` means "the served root itself", so **Stage All** reuses the same `/api/git/stage` endpoint with `path: "."` instead of a dedicated route.
+
+When committing without explicitly staged files, `handleGitCommit` automatically checks `gitHasUncommittedChanges(root)`: if modified or untracked files exist, px0 automatically stages them via `gitStage(root, ".")` before invoking `gitCommit`. If the working tree is completely clean, it fails fast with "nothing staged to commit". All three endpoints (`handleGitStage`, `handleGitUnstage`, `handleGitCommit` in `server.go`) validate `path` through `s.safePath` — the same traversal guard `handleFile`/`handleRaw` use — and call `s.gitWatcher.Trigger()` on success so the SSE stream broadcasts immediately instead of waiting for the next poll tick.
+
+### Single-Hunk Actions (`/api/git/hunk`)
+
+Beyond whole-file staging, px0 allows staging, unstaging, or discarding individual diff hunks from the diff view. `gitApplyHunk(root, patch, action)` (`git.go`) pipes a zero-context unified patch (`--unidiff-zero`) directly into Git:
+- **`stage`**: Runs `git apply --cached --unidiff-zero -` to stage only the selected hunk.
+- **`unstage`**: Runs `git apply --reverse --cached --unidiff-zero -` to unstage that specific hunk from the index while keeping working-tree modifications.
+- **`discard`**: Runs `git apply --reverse --unidiff-zero -` to discard that hunk's changes from the working tree.
+
+### Safe Repositories & Unborn HEAD Resilience
+
+`gitProbe` verifies whether the workspace root is a valid, accessible Git repository and handles `safe.directory` checks gracefully. When a repository is freshly initialized without any commits (an unborn `HEAD`), branch detection reads `ref: refs/heads/<name>` directly from `.git/HEAD`, diffing falls back safely without error, and staging/unstaging endpoints avoid failing on non-existent `HEAD` references.
 
 ### Fast-Forward-Only Pull
 
@@ -309,17 +322,19 @@ For a plain workspace, `handleGitPush` runs a bare `gitPush` (`git push`); if th
 
 | Endpoint | Method | Purpose |
 | --- | --- | --- |
-| `/api/git/stage` | POST | `{path}` — stage a file, or `"."` for everything. |
-| `/api/git/unstage` | POST | `{path}` — unstage a file. |
-| `/api/git/commit` | POST | `{message}` — commit whatever is staged. `400` if nothing is. |
+| `/api/git/stage` | POST | `{path}` — stage a file, or `"."` for everything. Returns fresh status payload. |
+| `/api/git/unstage` | POST | `{path}` — unstage a file. Returns fresh status payload. |
+| `/api/git/hunk` | POST | `{path, hunk, action}` — stage, unstage, or discard an isolated diff hunk. |
+| `/api/git/commit` | POST | `{message}` — commit staged changes (auto-stages unstaged modifications if none staged). `400` if working tree is clean. |
 | `/api/git/push` | POST | Push the current branch, or (PR session) the PR's head branch. |
 | `/api/git/pull` | POST | Fast-forward pull, or (PR session) re-sync with the PR head. `409` on divergence (with `code: "diverged"` and the sync state), a rebase/merge in progress (`code: "in-progress"`), or uncommitted changes. |
 | `/api/git/sync-agent` | POST | `{strategy}`: dispatch the selected harness to rebase or merge onto the upstream, or finish one in progress. Returns an `agentJob`. |
 | `/api/git/sync-state` | GET | Branch, upstream, ahead/behind, in-progress op, dirty. |
 | `/api/git/abort` | POST | Abort the rebase or merge in progress. `409` if there is none. |
 | `/api/git/commit-message` | POST | Dispatch the selected harness to write a commit message for the staged diff. Returns an `agentJob`, polled via `/api/agent/job`. `400` if nothing is staged or no harness is selected. |
+| `/api/git/log` | GET | List recent commits in current branch. |
 
-Every write endpoint is guarded by `localPost` ([`lspsetup.go`](../../lspsetup.go)), the same POST-only, same-origin, IP-or-localhost check every other mutating px0 endpoint uses.
+Every write endpoint is guarded by `localPost` ([`server.go`](../../server.go)), the same POST-only, same-origin, IP-or-localhost check every other mutating px0 endpoint uses.
 
 ## 10. Unpushed Commits (`@{u}..HEAD`)
 

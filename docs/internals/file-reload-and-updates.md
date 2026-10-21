@@ -1,6 +1,6 @@
 # File Updates & In-Place Tab Reloading
 
-This document details the end-to-end architecture, performance optimizations, and edge-case handling for workspace file updates and tab reloading ([`web/src/tabs.js`](../../web/src/tabs.js), [`web/src/panels.js`](../../web/src/panels.js), [`server.go`](../../server.go), and [`highlight.go`](../../highlight.go)), introduced in commit `c33376b4b43b2ae3ecbc6fedd45b9dee0726a401`.
+This document details the end-to-end architecture, performance optimizations, and edge-case handling for workspace file updates and tab reloading ([`web/src/tabs.js`](../../web/src/tabs.js), [`web/src/panels.js`](../../web/src/panels.js), [`server.go`](../../server.go), and [`internal/render/render.go`](../../internal/render/render.go)), introduced in commit `c33376b4b43b2ae3ecbc6fedd45b9dee0726a401`.
 
 ---
 
@@ -35,7 +35,7 @@ sequenceDiagram
     participant Panels as web/src/panels.js
     participant Tabs as web/src/tabs.js (reloadOpenTabs)
     participant Server as Go Backend (/api/reindex & /api/file)
-    participant Cache as highlight.go (Doc Cache)
+    participant Cache as internal/render (Doc Cache)
     participant Renderer as web/src/renderer.js (layout & render)
 
     User->>UI: Click "#btn-reindex" or run Palette command
@@ -143,7 +143,7 @@ const results = await Promise.allSettled(
 
 ### Step 4: Backend Invalidation & Cache Coherence
 
-On the Go server, `/api/file` calls `Open(abs, rel)` in [`highlight.go`](../../highlight.go):
+On the Go server, `/api/file` calls `Open(abs, rel)` in [`internal/render/render.go`](../../internal/render/render.go):
 
 ```go
 key := fmt.Sprintf("%s|%d|%d", abs, st.ModTime().UnixNano(), st.Size())
@@ -223,7 +223,7 @@ updateStatus();
 | **Single Reflow / Render Budget** | Deferred `layout()` and `render()` called once after all tabs are resolved | Keeps UI execution within the sub-millisecond frame budget regardless of open tab count. |
 | **Anchor-Bounded Chunk Loading** | Requests only the 1000-line chunk containing `cur` (`CHUNK = 1000`) | Network transfer payload remains $O(1)$ relative to total file size. |
 | **Concurrent Network Fetching** | `Promise.allSettled` over parallel HTTP connections | Overcomes serialized network latency across multi-tab sessions. |
-| **Server-Side Stat Validation** | `key = abs \| mtime \| size` caching in `highlight.go` | Bypasses disk I/O and syntax tokenization for all unmodified open files. |
+| **Server-Side Stat Validation** | `key = abs \| mtime \| size` caching in `internal/render` | Bypasses disk I/O and syntax tokenization for all unmodified open files. |
 | **Non-Blocking Auxiliary Tasks** | Asynchronous `loadGutter()` and `refineChunk()` calls | Git diff markers and exact lexer refinements load in the background without stalling editor paint. |
 
 ---

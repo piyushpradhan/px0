@@ -21,6 +21,7 @@ px0 connects to official language servers already installed on your system (such
   - **Outgoing Calls (Callees)**: See all functions invoked by the routine.
 - **Hover Documentation Cards**: Hovering your pointer over any identifier displays its type signature, return types, package path, and rendered docstring comments.
 - **External Standard Library Navigation**: When jumping to definitions in standard libraries (such as Go's `net/http` or Rust's `std::sync`), px0 opens external read-only tabs so you can inspect standard library internals without cloning their sources.
+- **Inline Diagnostics & Error Badges**: Receives published language server diagnostics (`publishDiagnostics`) in real time. Errors and warnings are marked directly on the relevant lines in both code and diff views using non-destructive gutter badges.
 - **Zero-Config Discovery & In-App Setup**: Automatically detects language servers in your `PATH`. If a server is missing, clicking **LSP: set up** in the status bar reveals one-click installation recipes tailored to your operating system.
 
 ---

@@ -79,7 +79,7 @@ export function applyAgentMeta() {
   }
   for (const picker of extraPickers) updateSessionMeta(picker);
   syncBatchMeta();
-  syncGitPanelMeta();
+  syncGitPanelHarnessMeta();
 }
 
 function updateSessionMeta(session) {
@@ -197,7 +197,7 @@ function syncBatchMeta() {
 // Harness/model pickers for the sidebar git panel's "Generate" commit
 // message action -- same global selection as every other harness picker,
 // just a second view onto it (see syncBatchMeta above).
-function syncGitPanelMeta() {
+function syncGitPanelHarnessMeta() {
   if (!gitHarness || !gitModel) return;
   const ready = installed();
   const currentHarness = chosen();

@@ -6,6 +6,7 @@
   "description": "High-performance code reader and review engine",
   "scripts": {
     "build": "node ./scripts/build-web.js",
+    "build-web": "node ./scripts/build-web.js",
     "check": "node ./scripts/check-web.js",
     "test": "bun test web/src/"
   }

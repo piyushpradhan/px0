@@ -1,6 +1,6 @@
 # Windowed Syntax Highlighting Engine
 
-This document details the architecture and performance strategies of px0's windowed syntax highlighting engine ([`highlight.go`](../../highlight.go)).
+This document details the architecture and performance strategies of px0's windowed syntax highlighting engine ([`internal/render/render.go`](../../internal/render/render.go)).
 
 ## 1. The Syntax Highlighting Bottleneck
 

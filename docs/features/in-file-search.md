@@ -14,8 +14,9 @@ Combined with dedicated line-jumping tools (`Cmd/Ctrl+G` or direct CLI opening l
 
 ## Key Capabilities
 
-- **Active Find Bar (`Cmd/Ctrl+F`)**: Opens an unobtrusive search bar in the top-right corner of the editor.
+- **Active Find Bar (`Cmd/Ctrl+F`)**: Opens an unobtrusive search bar in the top-right corner of the editor. Works seamlessly in read-only view, Markdown preview, and the direct text editor.
 - **Selection Pre-Seeding**: If text is selected when pressing `Cmd/Ctrl+F`, that text is automatically copied into the search box, eliminating the need to retype identifier names.
+- **In-Editor Find & Centering**: When editing files in direct edit mode (`Cmd/Ctrl+E`), `Cmd/Ctrl+F` searches the live textarea buffer, selecting matches, updating count indicators, and automatically scrolling the active hit into center view.
 - **Instant Match Highlighting**: All matches in the active file are highlighted in real time. The active match is highlighted with a distinct high-contrast accent marker.
 - **Minimap & Scrollbar Markers**: Small vertical tick marks appear along the scrollbar track indicating the positions of all matches throughout the entire document, giving you an immediate sense of occurrence distribution.
 - **Regex & Case-Sensitivity Toggles**: Easily switch between literal and regular expression matching, or toggle case sensitivity to locate specific casing conventions.

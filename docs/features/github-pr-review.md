@@ -208,7 +208,7 @@ The table shows where each forge differs. Details follow.
 
 ## Extensible Forge Architecture (`GitProvider`)
 
-px0 abstracts forge interactions through the `GitProvider` interface in [`provider.go`](../../provider.go):
+px0 abstracts forge interactions through the `GitProvider` interface in [`forge.go`](../../forge.go):
 - **Provider Detection**: Matches input URLs against registered providers (GitHub, GitLab, Gitea/Forgejo, Bitbucket Cloud).
 - **Normalized Metadata**: Maps forge-specific PR/MR objects to standard `PRMeta` structures.
 - **Push Access & Token Discovery**: Isolates provider-specific authentication, including which host a token may be sent to.

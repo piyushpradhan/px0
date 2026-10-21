@@ -3,7 +3,7 @@
 This document describes the design and implementation of px0's editing flow:
 
 - dispatch and change detection: [`agent.go`](../../agent.go)
-- the persisted harness choice: [`settings.go`](../../settings.go)
+- the persisted harness choice: [`internal/settings/settings.go`](../../internal/settings/settings.go)
 - the instruction composers and footer controls: [`web/src/agent.js`](../../web/src/agent.js)
 - the selection bar and right-click menu that start an edit: [`web/src/selbar.js`](../../web/src/selbar.js)
 
@@ -101,7 +101,7 @@ $XDG_CONFIG_HOME/px0/settings.json     # when XDG_CONFIG_HOME is set
 }
 ```
 
-This follows `stateFilePath` in [`update.go`](../../update.go) and sits beside the anonymous ID written by [`telemetry.go`](../../telemetry.go). px0 never writes its own state into a working tree: there is no `.px0/` directory in the repository.
+This follows `stateFilePath` in [`internal/update/update.go`](../../internal/update/update.go) and sits beside the anonymous ID written by [`internal/telemetry/telemetry.go`](../../internal/telemetry/telemetry.go). px0 never writes its own state into a working tree: there is no `.px0/` directory in the repository.
 
 A corrupt or stale settings file is never an error. If the saved harness has since been uninstalled it simply resolves to nothing selected, and the picker appears again.
 
@@ -136,7 +136,7 @@ The binary is resolved before a harness can be selected, so a typo or an uninsta
 
 ### Stdin Stays Empty
 
-`cmd.Stdin` is never set. A harness that still decides to ask something reads EOF and exits, which surfaces as an error in the job. This mirrors the same decision in the language-server installer ([`lspsetup.go`](../../lspsetup.go)) and is the difference between a failed run and a hung one.
+`cmd.Stdin` is never set. A harness that still decides to ask something reads EOF and exits, which surfaces as an error in the job. This mirrors the same decision in the language-server installer ([`server.go`](../../server.go)) and is the difference between a failed run and a hung one.
 
 ### Real-Time Streaming and Output
 
@@ -169,7 +169,7 @@ Outside a git repository there is no status to compare, so the job reports `trac
 
 ## 7. The Reload Path
 
-The syntax highlighting cache memoises on `path + mtime + size` ([`highlight.go`](../../highlight.go)), so a rewritten file misses the cache on its own and no invalidation is needed for the common case. Two things still need explicit handling:
+The syntax highlighting cache memoises on `path + mtime + size` ([`internal/render/render.go`](../../internal/render/render.go)), so a rewritten file misses the cache on its own and no invalidation is needed for the common case. Two things still need explicit handling:
 
 - Torn reads. `Open` stats and then reads, non-atomically. A harness that truncates and writes in place can be caught mid-write, and that partial copy would then sit under a cache key nothing invalidates. Every changed file is therefore passed to `Evict` before the reload.
 - Stale language servers. `gopls` and friends hold their own copy of a file and never saw the write, so go-to-definition and hover would drift. Each changed file is passed to `lsp.CloseDoc`, and the server reopens it on the next request.
@@ -220,7 +220,7 @@ A job snapshot:
 
 `/api/meta` carries `agent` (the selected name, or empty), `agentPinned`, and `agents` (the detected list), so the UI can decide at boot whether to offer editing without a second request.
 
-Every mutating endpoint is guarded by `localPost` ([`lspsetup.go`](../../lspsetup.go)): POST only, `Origin` must match `Host`, and `Host` must be an IP address or `localhost`, which shuts out DNS rebinding.
+Every mutating endpoint is guarded by `localPost` ([`server.go`](../../server.go)): POST only, `Origin` must match `Host`, and `Host` must be an IP address or `localhost`, which shuts out DNS rebinding.
 
 ### Security Posture
 

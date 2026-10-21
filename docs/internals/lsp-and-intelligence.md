@@ -1,6 +1,6 @@
 # Language Server Protocol (LSP) Architecture & Intelligence
 
-This document details the architecture, lifecycle management, and security boundaries of px0's Language Server Protocol subsystem ([`lsp.go`](../../lsp.go), [`lspnav.go`](../../lspnav.go), [`lspservers.go`](../../lspservers.go), [`lspsetup.go`](../../lspsetup.go), and [`calls.go`](../../calls.go)).
+This document details the architecture, lifecycle management, and security boundaries of px0's Language Server Protocol subsystem ([`lsp.go`](../../lsp.go) and [`server.go`](../../server.go)).
 
 ## 1. Zero-Cost Lazy Architecture
 
@@ -28,7 +28,7 @@ stateDiagram-v2
 
 ## 2. Server Registry & Extension Precedence
 
-Language server definitions reside in [`lspservers.go`](../../lspservers.go). Multiple language servers can be registered for a given extension, evaluated in order of precedence:
+Language server definitions reside in [`lsp.go`](../../lsp.go). Multiple language servers can be registered for a given extension, evaluated in order of precedence:
 
 | Language          | Extensions                   | Primary Server               | Fallback Server | Discovery Search Paths     |
 | ----------------- | ---------------------------- | ---------------------------- | --------------- | -------------------------- |
@@ -93,7 +93,7 @@ sequenceDiagram
 - Target paths returned by the server are normalized and admitted into `extAllowed`.
 - External files can be opened and inspected, but cannot be enumerated, searched, listed in the sidebar explorer tree, or edited with an agent.
 
-## 5. Stateless Call Hierarchy Trails ([`calls.go`](../../calls.go))
+## 5. Stateless Call Hierarchy Trails ([`lsp.go`](../../lsp.go))
 
 px0 provides full incoming and outgoing call hierarchy navigation (`Calls` tab in the right inspector) without holding complex graph state in server memory.
 

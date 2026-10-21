@@ -2,7 +2,7 @@
 
 This document describes how px0 renders Markdown files: the server-side conversion, the browser-side sanitizer, and the logic that keeps the rendered view and the source view in step.
 
-A Markdown tab (`.md` or `.markdown`) opens rendered by default. The reader switches to the raw source with the Preview / Source switch in the tab bar, the Preview button in the status bar, or Alt+M. The code lives in two files: [`markdown.go`](../../markdown.go) on the server and [`web/src/markdown.js`](../../web/src/markdown.js) in the browser.
+A Markdown tab (`.md` or `.markdown`) opens rendered by default. The reader switches to the raw source with the Preview / Source switch in the tab bar, the Preview button in the status bar, or Alt+M. The code lives in two files: [`internal/render/render.go`](../../internal/render/render.go) on the server and [`web/src/markdown.js`](../../web/src/markdown.js) in the browser.
 
 ## 1. Request Flow
 
@@ -99,7 +99,7 @@ goldmark's default id generator drops every non-ASCII character and turns `_` in
 <pre class="md-code" data-line="8" data-lang="go"><code><i class=k>func</i> <i class=nf>main</i>...</code></pre>
 ```
 
-`highlightFence` looks up the fence's language with `lexers.Get` and calls `highlightLines`, the function the code view uses in [`highlight.go`](../../highlight.go). `Doc.tokenise` is now a thin wrapper around it. Both views therefore share lexers, the `classFor` token mapping, and the panic recovery that falls back to plain text. A theme colours both through the same CSS rules (`.c .k, .md-code .k`).
+`highlightFence` looks up the fence's language with `lexers.Get` and calls `highlightLines`, the function the code view uses in [`internal/render/render.go`](../../internal/render/render.go). `Doc.tokenise` is now a thin wrapper around it. Both views therefore share lexers, the `classFor` token mapping, and the panic recovery that falls back to plain text. A theme colours both through the same CSS rules (`.c .k, .md-code .k`).
 
 Two cases stay plain and HTML-escaped:
 
@@ -276,7 +276,7 @@ CSV and TSV tabs reuse this overlay. `/api/file` returns `"table": true` for `.c
 
 ### Endpoint
 
-`GET /api/table?path=<path>` ([`table.go`](../../table.go)) resolves the path like `/api/markdown`, answers 415 for other extensions, and parses with `encoding/csv` (`LazyQuotes`, `FieldsPerRecord = -1`). `Comma` comes from `sniffDelim`: it peeks at the first 64 KB, takes the first non-blank line, and counts comma, tab, semicolon and pipe outside double quotes. The most frequent wins, and the extension's separator (`.csv` → comma, `.tsv` → tab) wins ties and files with none. Misnamed files are common: a tab-separated `.csv` read with commas comes out as one cell per line. The first record is the header, with a leading UTF-8 BOM removed. It returns:
+`GET /api/table?path=<path>` ([`internal/table/table.go`](../../internal/table/table.go)) resolves the path like `/api/markdown`, answers 415 for other extensions, and parses with `encoding/csv` (`LazyQuotes`, `FieldsPerRecord = -1`). `Comma` comes from `sniffDelim`: it peeks at the first 64 KB, takes the first non-blank line, and counts comma, tab, semicolon and pipe outside double quotes. The most frequent wins, and the extension's separator (`.csv` → comma, `.tsv` → tab) wins ties and files with none. Misnamed files are common: a tab-separated `.csv` read with commas comes out as one cell per line. The first record is the header, with a leading UTF-8 BOM removed. It returns:
 
 ```json
 { "header": ["repo", "files"], "headerLine": 1,

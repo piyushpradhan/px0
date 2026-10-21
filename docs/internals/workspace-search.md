@@ -1,6 +1,6 @@
 # Workspace Search & Symbol Extraction
 
-This document explains px0's high-throughput parallel search engine ([`search.go`](../../search.go)) and fast regex symbol extractor ([`symbols.go`](../../symbols.go)).
+This document explains px0's high-throughput parallel search engine ([`search.go`](../../search.go)) and fast regex symbol extractor ([`internal/symbols/symbols.go`](../../internal/symbols/symbols.go)).
 
 ## 1. Search Engine Architecture
 
@@ -102,7 +102,7 @@ type Match struct {
 1. Zero Client Discrepancies: JavaScript uses UTF-16 code units, whereas Go uses UTF-8 byte sequences. Sending offsets requires complex client-side reconciliation. Sending pre-split strings completely eliminates boundary alignment bugs.
 1. Bandwidth Savings: Discarding massive leading and trailing line segments shrinks JSON payloads significantly.
 
-## 5. Regex Symbol Extraction ([`symbols.go`](../../symbols.go))
+## 5. Regex Symbol Extraction ([`internal/symbols/symbols.go`](../../internal/symbols/symbols.go))
 
 When language servers are disabled or unavailable, px0 provides instantaneous symbol outlines and declaration jump navigation via heuristic regular expressions.
 
@@ -112,7 +112,7 @@ During full-text searches, lines that look like function, class, struct, or type
 
 ### Supported Language Grammars
 
-`symbols.go` maintains high-performance compiled regular expressions for:
+`internal/symbols/symbols.go` maintains high-performance compiled regular expressions for:
 
 - Go: `func (r *Receiver) Name(...)`, `type Name struct/interface`
 - TypeScript / JavaScript: `function name()`, `class Name`, `const name = () =>`, `interface Name`

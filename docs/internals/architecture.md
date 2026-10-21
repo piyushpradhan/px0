@@ -72,6 +72,22 @@ When hosted behind reverse proxies or multi-tenant review platforms, px0 support
 - `handleIndex` dynamically injects `<base href="/<base-path>/">` into `web/index.html`, allowing the frontend to resolve relative assets and API endpoints without domain-level assumptions.
 - Requests to `/<base-path>` without a trailing slash redirect to `/<base-path>/`, and root `/` redirects to the configured base path.
 
+### Subsystem Structure & Package Architecture
+
+px0 is structured into decoupled core files and modular `internal/` packages:
+
+- **Root Package (`px0`)**: Contains the CLI entrypoint ([`main.go`](../../main.go)), HTTP routing and middleware ([`server.go`](../../server.go)), filesystem indexing and tree walk ([`index.go`](../../index.go)), search pipeline ([`search.go`](../../search.go)), Git operations and watcher ([`git.go`](../../git.go)), LSP client and supervisor ([`lsp.go`](../../lsp.go)), agent harnesses and multi-turn threads ([`agent.go`](../../agent.go)), PR review lifecycle ([`pr.go`](../../pr.go)), forge providers ([`forge.go`](../../forge.go)), and multi-repo workbench ([`workbench.go`](../../workbench.go)).
+- **`internal/fuzzy`**: Two-pass bounded fuzzy path finder and score ranking.
+- **`internal/ignore`**: Gitignore rule parsing and fast path glob matching.
+- **`internal/render`**: Windowed Chroma syntax highlighting, markdown rendering, and diff coloring.
+- **`internal/symbols`**: Regex-based multi-language declaration and symbol extraction.
+- **`internal/table`**: Delimiter sniffing and CSV/TSV table parsing.
+- **`internal/settings`**: Configuration schema, JSON persistence, and settings synchronization.
+- **`internal/telemetry`**: Anonymous event dispatch and usage telemetry.
+- **`internal/ui`**: Terminal formatting, ANSI colors, spinner animations, and TTY handling.
+- **`internal/metrics`**: Process memory, CPU, and goroutine monitoring.
+- **`internal/update`**: Self-update manifest checking, checksum verification, and binary replacement.
+
 ### Endpoints Reference
 
 | Endpoint              | Method | Purpose                                                                 | Response Format                            |
@@ -83,36 +99,76 @@ When hosted behind reverse proxies or multi-tenant review platforms, px0 support
 | `/api/metrics`        | `GET`  | Point-in-time process memory, CPU, and goroutine stats (polled via `/api/stream` SSE) | JSON (`{rssBytes, cpuUsage, goroutines}`)|
 | `/api/tree`           | `GET`  | Directory contents for the sidebar file explorer (`?dir=path`)          | JSON array of `Node` objects               |
 | `/api/file`           | `GET`  | Windowed, highlighted source file lines (`?path=...&start=0&count=500`) | JSON (`{lines, total, refine, markdown}`)  |
-| `/api/file/save`      | `POST` | Write edited file content, creating parent folders | JSON (`{ok, path, size}`) |
-| `/api/fs/new`         | `POST` | Create an empty file or a folder (`409` if it exists) | JSON (`{ok, path, type}`) |
+| `/api/file/save`      | `POST` | Write edited file content, creating parent folders                      | JSON (`{ok, path, size}`)                  |
+| `/api/fs/new`         | `POST` | Create an empty file or a folder (`409` if it exists)                   | JSON (`{ok, path, type}`)                  |
+| `/api/close`          | `POST` | Release cached document handles and LSP files when tab closes          | JSON (`{ok: true}`)                        |
 | `/api/raw`            | `GET`  | Raw file content for copies and preview assets (attachment; nosniff)    | `application/octet-stream` or `image/*`    |
 | `/api/markdown`       | `GET`  | Converted HTML preview of `.md` / `.markdown` files via goldmark        | JSON (`{path, html}`)                      |
 | `/api/table`          | `GET`  | First 1,000 rows (or 1 MB) of a `.csv` / `.tsv` file, parsed with `encoding/csv` | JSON (`{header, headerLine, rows, cols, truncated}`) |
-| `/api/find`           | `GET`  | Fast fuzzy match against all indexed workspace paths (`?q=...`)         | JSON array of `FuzzyResult` objects        |
+| `/api/find`           | `GET`  | Fast fuzzy match against all indexed workspace paths (`?q=...`)         | JSON (`{results: [...], indexing: bool}`)  |
 | `/api/search`         | `GET`  | Full-text project grep with snippet elision (`?q=...&case=...&regex=...`)| JSON array of file hits and matches        |
 | `/api/outline`        | `GET`  | Regex-extracted symbol outline for a given file (`?path=...`)          | JSON array of symbol declarations          |
 | `/api/def`            | `GET`  | Quick definition lookup fallback                                        | JSON array of matching definition locations|
-| `/api/diff`           | `GET`  | Unified diff of working tree vs. `HEAD` (`?path=...`)                   | JSON (`{path, diff, available}`)           |
+| `/api/diff`           | `GET`  | Unified diff of working tree vs. `HEAD` or commit ref (`?path=...&ref=...`) | JSON (`{path, diff, available}`)      |
 | `/api/gutter`         | `GET`  | Per-line change markers for code view gutter                            | JSON (`{added, modified, deleted}`)        |
 | `/api/stream`         | `GET`  | Unified SSE stream for real-time `git-status` and `metrics` events (aliased by `/api/git/stream`) | `text/event-stream`   |
 | `/api/git/refresh`    | `POST` | Triggers immediate git status check and returns status payload          | JSON (`{git, gitChanges, gitFiles, ...}`)  |
-| `/api/reindex`        | `POST` | Re-runs index walk and git status on demand (triggers frontend tab reload; see [`file-reload-and-updates.md`](file-reload-and-updates.md)) | JSON (`{files, indexMs}`)                  |
+| `/api/git/stage`      | `POST` | Stage a file (`?path=...`), or `"."` for all changes                   | JSON (`{ok, status}`)                      |
+| `/api/git/unstage`    | `POST` | Unstage a file (`?path=...`)                                            | JSON (`{ok, status}`)                      |
+| `/api/git/hunk`       | `POST` | Stage, unstage, or discard an isolated diff hunk (`?path=...&action=...`) | JSON (`{ok: true}`)                     |
+| `/api/git/commit`     | `POST` | Commit staged changes (auto-stages unstaged modifications if none staged) | JSON (`{ok, sha}`)                      |
+| `/api/git/commit-message` | `POST` | Dispatch harness to write commit message from staged diff           | JSON job snapshot                          |
+| `/api/git/push`       | `POST` | Push current branch (or PR head) to remote                              | JSON (`{ok: true}`)                        |
+| `/api/git/pull`       | `POST` | Fast-forward pull from upstream                                         | JSON (`{ok: true}`)                        |
+| `/api/git/sync-agent` | `POST` | Dispatch harness to rebase or merge diverged branches                   | JSON job snapshot                          |
+| `/api/git/sync-state` | `GET`  | Current branch divergence and in-progress rebase/merge state            | JSON (`{code, branch, upstream, ...}`)     |
+| `/api/git/abort`      | `POST` | Abort a rebase or merge in progress                                     | JSON (`{ok: true}`)                        |
+| `/api/git/log`        | `GET`  | Recent commits in active repository                                     | JSON array of recent commits               |
+| `/api/unpushed`       | `GET`  | List commits on local branch not yet pushed to upstream                 | JSON (`{available, upstream, commits}`)    |
+| `/api/commitfiles`    | `GET`  | Files touched by a specific commit (`?sha=...`)                         | JSON array of file records                 |
+| `/api/commitdetail`   | `GET`  | Commit author, message, and diffstat summary (`?sha=...`)               | JSON commit details                        |
+| `/api/reindex`        | `POST` | Re-runs index walk and git status on demand                             | JSON (`{files, indexMs}`)                  |
 | `/api/lsp/def`        | `GET`  | Go-to-Definition via LSP (`?path=...&line=...&col=...`)                 | JSON array of target locations             |
 | `/api/lsp/refs`       | `GET`  | Find References via LSP                                                 | JSON array of reference locations          |
 | `/api/lsp/calls`      | `POST` | Incoming/outgoing call hierarchy tree expansion                         | JSON array of `CallNode` objects           |
 | `/api/lsp/symbols`    | `GET`  | Document symbols extracted via LSP                                      | JSON array of LSP symbols                  |
 | `/api/lsp/hover`      | `GET`  | Type signature and markdown doc hovercard info                          | JSON (`{contents: ...}`)                   |
+| `/api/lsp/diagnostics`| `GET`  | Diagnostics published for file (`?path=...`)                            | JSON array of `LSPDiagnostic` objects      |
 | `/api/lsp/warm`       | `POST` | Pre-warms or spawns language server for given file extension            | JSON (`{ok: true}`)                        |
 | `/api/lsp/setup`      | `GET`  | Reports install status and commands for current file language           | JSON (`{installed, recipes, ...}`)         |
 | `/api/lsp/install`    | `POST` | Executes user-level installer in background                             | JSON (`{ok: true}`)                        |
-| `/api/lsp/start`      | `POST` | Starts language server for path or server name (`?server=...` or `?path=...`) | JSON status payload        |
-| `/api/lsp/stop`       | `POST` | Stops language server (`?server=...`) or all running language servers   | JSON status payload        |
-| `/api/lsp/servers`    | `GET`  | Lists relevant language servers for workspace with status and metrics   | JSON (`{enabled, anyRunning, servers}`)|
-| `/api/agent/harnesses`| `GET`  | Detected coding harnesses and the current choice                        | JSON (`{harnesses, selected, pinned, settings}`) |
-| `/api/agent/select`   | `POST` | Choose and remember a harness (`?name=...`)                             | JSON (`{harnesses, selected, pinned, settings}`) |
-| `/api/agent/edit`     | `POST` | Dispatch an instruction to the harness (`?path=...&l1=...&l2=...&instruction=...`) | JSON job snapshot               |
-| `/api/agent/job`      | `GET`  | Snapshot of job `?id=...`, or the most recently started when omitted: output, changed files | JSON job snapshot          |
-| `/api/agent/cancel`   | `POST` | Stop every running harness                                              | JSON (`{cancelled}`)                       |
+| `/api/lsp/start`      | `POST` | Starts language server for path or server name                          | JSON status payload                        |
+| `/api/lsp/stop`       | `POST` | Stops language server (`?server=...`) or all running servers            | JSON status payload                        |
+| `/api/lsp/servers`    | `GET`  | Lists relevant language servers for workspace with status and metrics   | JSON (`{enabled, anyRunning, servers}`)    |
+| `/api/agent/harnesses`| `GET`  | Detected coding harnesses and current choice                            | JSON (`{harnesses, selected, pinned, ...}`)|
+| `/api/agent/select`   | `POST` | Choose and remember a harness (`?name=...`)                             | JSON (`{harnesses, selected, pinned, ...}`)|
+| `/api/agent/edit`     | `POST` | Dispatch an instruction to the harness for a line range                 | JSON job snapshot                          |
+| `/api/agent/batch`    | `POST` | Dispatch a batch edit instruction across multiple ranges/files          | JSON job snapshot                          |
+| `/api/agent/job`      | `GET`  | Snapshot of job output and changed files                                | JSON job snapshot                          |
+| `/api/agent/cancel`   | `POST` | Stop running harness job                                                | JSON (`{cancelled: true}`)                 |
+| `/api/threads`        | `GET`  | List thread summaries for workspace                                     | JSON array of thread summaries             |
+| `/api/threads/get`    | `GET`  | Fetch thread details and turn history (`?id=...`)                       | JSON thread object                         |
+| `/api/threads/create` | `POST` | Create a new thread and run first turn                                  | JSON thread object                         |
+| `/api/threads/send`   | `POST` | Post follow-up message to an existing thread                            | JSON thread object                         |
+| `/api/threads/cancel` | `POST` | Cancel active turn on thread                                            | JSON (`{ok: true}`)                        |
+| `/api/threads/scope`  | `POST` | Update thread review scope in PR mode (`pr`, `mine`, `selection`)       | JSON (`{ok: true}`)                        |
+| `/api/threads/delete` | `POST` | Delete thread by ID                                                     | JSON (`{ok: true}`)                        |
+| `/api/threads/revert` | `POST` | Revert file changes made by a specific turn                             | JSON (`{ok, thread, reverted}`)            |
+| `/api/threads/stream` | `GET`  | SSE event feed for thread updates and turn outputs                      | `text/event-stream`                        |
+| `/api/settings`       | `GET` / `POST` | Read or update workspace/global configuration                   | JSON settings schema and values            |
+| `/api/pr/meta`        | `GET`  | PR metadata, merge-base, head SHA, and diffstat                         | JSON PR metadata                           |
+| `/api/pr/comments`    | `GET`  | Draft comments for active PR review session                             | JSON array of comments                     |
+| `/api/pr/comments/delete` | `POST` | Delete a draft PR comment by ID                                     | JSON (`{ok: true}`)                        |
+| `/api/pr/submit`      | `POST` | Submit review comments to forge API (`APPROVE`, `REQUEST_CHANGES`, etc.)| JSON (`{ok: true}`)                        |
+| `/api/pr/launch`      | `POST` | Launch PR workspace in Review Workbench                                 | JSON (`{ok, port, url}`)                   |
+| `/api/pr/existing-comments` | `GET` | Fetch existing published review comments from forge API            | JSON array of comments                     |
+| `/api/pr/comments/issue` | `POST` | Post a top-level conversation comment to the PR                        | JSON (`{ok: true}`)                        |
+| `/api/pr/comments/review-reply` | `POST` | Reply to an existing PR review comment thread                  | JSON (`{ok: true}`)                        |
+| `/api/pr/merge-status`| `GET`  | Fetch PR mergeability status and allowed merge methods                  | JSON (`{canMerge, state, methods, ...}`)   |
+| `/api/pr/merge`       | `POST` | Merge PR using chosen method (`merge`, `squash`, `rebase`)              | JSON (`{merged, message, sha}`)            |
+| `/api/pr/merge-message` | `POST`| Dispatch harness to generate PR merge/squash message                    | JSON job snapshot                          |
+| `/api/forge/connect`  | `POST` | Test and persist forge API access token                                 | JSON (`{ok, user, host}`)                  |
+| `/api/session`        | `GET` / `POST` | Load or persist workspace UI session state (tabs, scroll, drafts) | JSON session data                        |
 
 ## 4. Memory Management & Proactive Scavenging
 

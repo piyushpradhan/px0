@@ -1,6 +1,6 @@
 # Filesystem Indexing & Ignore Engine
 
-This document explains the technical implementation of px0's in-memory indexer ([`index.go`](../../index.go)) and custom `.gitignore` evaluation engine ([`ignore.go`](../../ignore.go)).
+This document explains the technical implementation of px0's in-memory indexer ([`index.go`](../../index.go)) and custom `.gitignore` evaluation engine ([`internal/ignore/ignore.go`](../../internal/ignore/ignore.go)).
 
 ## 1. Directory Traversal Architecture
 
@@ -117,7 +117,7 @@ type Node struct {
 
 ## 3. High-Performance `.gitignore` Engine
 
-Evaluating regular expressions for hundreds of `.gitignore` patterns against tens of thousands of paths can cripple indexing performance. In [`ignore.go`](../../ignore.go), px0 classifies patterns into specialized non-regex fast paths and adds heuristic pre-filters to regexes.
+Evaluating regular expressions for hundreds of `.gitignore` patterns against tens of thousands of paths can cripple indexing performance. In [`internal/ignore/ignore.go`](../../internal/ignore/ignore.go), px0 classifies patterns into specialized non-regex fast paths and adds heuristic pre-filters to regexes.
 
 ### Rule Classification (`ruleKind`)
 

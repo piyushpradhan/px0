@@ -29,7 +29,7 @@ px0 [passed-on flags] -workbench-child -host 127.0.0.1 -port 0 -no-open -no-upda
 - **Idle stop.** The proxy counts requests in flight per child; an open tab always holds an event stream. `reapIdle` stops children with none in flight for `wbIdleAfter` (30 minutes).
 - **PR clones.** `checkoutPR` makes a worktree when its working directory is a clone of the PR's repository, so the workbench starts every PR child in one (see below). Before the child is launched, `run` resolves the clone, or makes one, while the state is `starting` and `progress` says what it is waiting on. `stop` cancels this through `wbChild.ctx`.
 
-## PR clones (`workbench_clone.go`)
+## PR clones ([`workbench.go`](../../workbench.go))
 
 Every PR is a worktree of one local clone per repository; nothing is cloned per PR.
 
