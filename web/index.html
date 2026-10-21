@@ -84,18 +84,15 @@
             <span class="git-link-sep" aria-hidden="true">&middot;</span>
             <a id="git-instructions-link" class="git-instructions-link" href="#" role="button" title="Configure commit message instructions for AI in Settings">instructions for AI</a>
           </div>
-          <div class="git-panel-actions git-commit-actions">
-            <button id="git-stage-all" class="footer-btn" title="Stage all changes">Stage All</button>
-            <button id="git-commit" class="footer-btn" title="Stage changes to commit" disabled>Commit</button>
-          </div>
         </div>
         <div id="git-clean-state" class="git-clean-state" hidden>
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           <span>Working tree clean</span>
         </div>
-        <div class="git-panel-actions git-sync-actions">
-          <button id="git-pull" class="footer-btn" title="Pull (fast-forward only; if the branches diverged, offers a rebase or merge by your coding harness)">Pull</button>
+        <div class="git-panel-actions">
+          <button id="git-commit" class="footer-btn" title="Tick modified files to stage them for commit" disabled>Commit</button>
           <button id="git-push" class="footer-btn" title="No unpushed commits to push" disabled>Push</button>
+          <button id="git-pull" class="footer-btn" title="Pull (fast-forward only; if the branches diverged, offers a rebase or merge by your coding harness)">Pull</button>
         </div>
         <div id="git-recent-commits" class="git-recent-commits">
           <div class="git-recent-head">

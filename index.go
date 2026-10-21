@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -141,13 +140,13 @@ func (ix *Index) Ready() bool {
 	}
 }
 
-// WaitReady blocks until the initial index build completes or ctx is canceled.
-func (ix *Index) WaitReady(ctx context.Context) error {
+// WaitReady waits up to timeout for the index build to complete.
+func (ix *Index) WaitReady(timeout time.Duration) bool {
 	select {
 	case <-ix.readyCh:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+		return true
+	case <-time.After(timeout):
+		return ix.Ready()
 	}
 }
 
@@ -183,34 +182,6 @@ func (ix *Index) GitStatusMap() map[string]string {
 	}
 	res := make(map[string]string, len(ix.gitStatusMap))
 	for k, v := range ix.gitStatusMap {
-		res[k] = v
-	}
-	return res
-}
-
-// GitStagedMap returns a copy of the mapping from relative path to staged boolean flag.
-func (ix *Index) GitStagedMap() map[string]bool {
-	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-	if ix.gitStagedMap == nil {
-		return map[string]bool{}
-	}
-	res := make(map[string]bool, len(ix.gitStagedMap))
-	for k, v := range ix.gitStagedMap {
-		res[k] = v
-	}
-	return res
-}
-
-// GitYourStatusMap returns a copy of the reviewer local modifications map in PR mode.
-func (ix *Index) GitYourStatusMap() map[string]string {
-	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-	if ix.gitYourStatusMap == nil {
-		return map[string]string{}
-	}
-	res := make(map[string]string, len(ix.gitYourStatusMap))
-	for k, v := range ix.gitYourStatusMap {
 		res[k] = v
 	}
 	return res
@@ -360,6 +331,32 @@ func sortNodes(kids []Node) {
 	})
 }
 
+func computeDirtyState(gs, ys map[string]string) (dirtyDirs, yourDirtyDirs map[string]bool, gitFiles []string) {
+	dirtyDirs = map[string]bool{}
+	for p := range gs {
+		gitFiles = append(gitFiles, p)
+		for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
+			p = p[:i]
+			dirtyDirs[p] = true
+		}
+	}
+	sort.Slice(gitFiles, func(i, j int) bool {
+		si, sj := gs[gitFiles[i]], gs[gitFiles[j]]
+		if (si != "U") != (sj != "U") {
+			return si != "U"
+		}
+		return gitFiles[i] < gitFiles[j]
+	})
+	yourDirtyDirs = map[string]bool{}
+	for p := range ys {
+		for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
+			p = p[:i]
+			yourDirtyDirs[p] = true
+		}
+	}
+	return dirtyDirs, yourDirtyDirs, gitFiles
+}
+
 // Build walks the tree once, honouring .gitignore at every level, and
 // materialises both the flat file list (for fuzzy find and search) and the
 // directory map (for the tree view). Root entries are published immediately so
@@ -369,46 +366,34 @@ func (ix *Index) Build() {
 	root := ignore.New(nil)
 	root = root.Child(ignore.ReadGitignore(ix.root, ""))
 
-	// Git status is computed up front, before the walk, rather than
-	// concurrently with it. It used to run in a goroutine so its ~80ms
-	// overlapped the tree scan, but the overlay was then only applied once,
-	// in a second pass after the *entire* walk finished -- so the root
-	// directory's early publish below (meant to show the tree instantly)
-	// carried no Dirty/Status info until the whole repo had been walked,
-	// which on a large repo could be seconds later. Doing it first means
-	// every node -- including the immediate root snapshot -- is published
-	// with correct git status from the start.
+	// Run git status concurrently with the directory walk so the 80-300ms git
+	// subprocess overlaps the filesystem scan, and root directory entries are
+	// published in under a millisecond on cold startup. Once both the walk and
+	// git status complete, statuses are overlaid across all nodes before readyCh
+	// closes.
 	base := ix.DiffBase()
 	head := ix.PRHead()
-	gs, staged, yourStatuses := gitStatusAndStagedAgainst(ix.root, base, head)
-	dirtyDirs := map[string]bool{}
-	var gitFiles []string
-	if gs != nil {
-		for p := range gs {
-			gitFiles = append(gitFiles, p)
-			for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-				p = p[:i]
-				dirtyDirs[p] = true
-			}
-		}
-		sort.Slice(gitFiles, func(i, j int) bool {
-			si, sj := gs[gitFiles[i]], gs[gitFiles[j]]
-			if (si != "U") != (sj != "U") {
-				return si != "U"
-			}
-			return gitFiles[i] < gitFiles[j]
-		})
+	type gitRes struct {
+		gs           map[string]string
+		staged       map[string]bool
+		yourStatuses map[string]string
+		dirtyDirs    map[string]bool
+		yourDirty    map[string]bool
+		gitFiles     []string
 	}
-
-	yourDirtyDirs := map[string]bool{}
-	if yourStatuses != nil {
-		for p := range yourStatuses {
-			for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-				p = p[:i]
-				yourDirtyDirs[p] = true
-			}
+	gsCh := make(chan gitRes, 1)
+	go func() {
+		gs, staged, yourStatuses := gitStatusAndStagedAgainst(ix.root, base, head)
+		dirtyDirs, yourDirtyDirs, gitFiles := computeDirtyState(gs, yourStatuses)
+		gsCh <- gitRes{
+			gs:           gs,
+			staged:       staged,
+			yourStatuses: yourStatuses,
+			dirtyDirs:    dirtyDirs,
+			yourDirty:    yourDirtyDirs,
+			gitFiles:     gitFiles,
 		}
-	}
+	}()
 
 	var (
 		mu       sync.Mutex
@@ -455,7 +440,7 @@ func (ix *Index) Build() {
 				continue
 			}
 			if isDir {
-				kids = append(kids, Node{Name: name, Path: childRel, Dir: true, Dirty: dirtyDirs[childRel], YourDirty: yourDirtyDirs[childRel]})
+				kids = append(kids, Node{Name: name, Path: childRel, Dir: true})
 				subdirs = append(subdirs, struct{ abs, rel string }{filepath.Join(abs, name), childRel})
 				continue
 			}
@@ -463,7 +448,7 @@ func (ix *Index) Build() {
 			if err != nil {
 				continue
 			}
-			kids = append(kids, Node{Name: name, Path: childRel, Size: info.Size(), Status: gs[childRel], Staged: staged[childRel], YourStatus: yourStatuses[childRel]})
+			kids = append(kids, Node{Name: name, Path: childRel, Size: info.Size()})
 			localFiles = append(localFiles, FileEntry{
 				Path: childRel, Name: name, Size: info.Size(),
 				Lower: toLowerIfNeeded(childRel), NameStart: len(childRel) - len(name),
@@ -484,23 +469,6 @@ func (ix *Index) Build() {
 			}
 			rootKids := make([]Node, len(kids))
 			copy(rootKids, kids)
-			for p, st := range gs {
-				if st == "D" && !strings.Contains(p, "/") {
-					yst := ""
-					if yourStatuses != nil {
-						yst = yourStatuses[p]
-					}
-					rootKids = append(rootKids, Node{
-						Name:       p,
-						Path:       p,
-						Dir:        false,
-						Status:     "D",
-						Staged:     staged[p],
-						YourStatus: yst,
-					})
-				}
-			}
-			sortNodes(rootKids)
 			ix.children[""] = rootKids
 			ix.mu.Unlock()
 		}
@@ -522,6 +490,32 @@ func (ix *Index) Build() {
 	wg.Add(1)
 	walk(ix.root, "", root)
 	wg.Wait()
+
+	gr := <-gsCh
+	gs, staged, yourStatuses := gr.gs, gr.staged, gr.yourStatuses
+	dirtyDirs, yourDirtyDirs, gitFiles := gr.dirtyDirs, gr.yourDirty, gr.gitFiles
+
+	if len(gs) > 0 || len(staged) > 0 || len(yourStatuses) > 0 {
+		for dir, kids := range children {
+			for i := range kids {
+				if kids[i].Ignored {
+					continue
+				}
+				p := kids[i].Path
+				if kids[i].Dir {
+					kids[i].Dirty = dirtyDirs[p]
+					kids[i].YourDirty = yourDirtyDirs[p]
+				} else {
+					kids[i].Status = gs[p]
+					kids[i].Staged = staged[p]
+					if yourStatuses != nil {
+						kids[i].YourStatus = yourStatuses[p]
+					}
+				}
+			}
+			children[dir] = kids
+		}
+	}
 
 	injectDeletedNodes(children, gs, staged, yourStatuses, dirtyDirs, yourDirtyDirs)
 
@@ -677,36 +671,10 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 	if sg == nil {
 		sg = map[string]bool{}
 	}
-
-	newYourDirtyDirs := map[string]bool{}
-	if head != "" {
-		if ys == nil {
-			ys = map[string]string{}
-		}
-		for p := range ys {
-			for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-				p = p[:i]
-				newYourDirtyDirs[p] = true
-			}
-		}
+	if head != "" && ys == nil {
+		ys = map[string]string{}
 	}
-
-	newDirtyDirs := map[string]bool{}
-	var newGitFiles []string
-	for p := range gs {
-		newGitFiles = append(newGitFiles, p)
-		for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
-			p = p[:i]
-			newDirtyDirs[p] = true
-		}
-	}
-	sort.Slice(newGitFiles, func(i, j int) bool {
-		si, sj := gs[newGitFiles[i]], gs[newGitFiles[j]]
-		if (si != "U") != (sj != "U") {
-			return si != "U"
-		}
-		return newGitFiles[i] < newGitFiles[j]
-	})
+	newDirtyDirs, newYourDirtyDirs, newGitFiles := computeDirtyState(gs, ys)
 
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
@@ -785,3 +753,166 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 	copy(resFiles, ix.gitFiles)
 	return ix.gitChanges, resFiles, true, gs, newDirtyDirs, sg, ys, newYourDirtyDirs
 }
+
+// TouchPath incrementally inserts or updates a single relative file or directory
+// path in ix.children and ix.files without re-walking the workspace tree.
+func (ix *Index) TouchPath(rel string) {
+	if !ix.Ready() {
+		ix.Build()
+		return
+	}
+	rel = strings.Trim(filepath.ToSlash(rel), "/")
+	if rel == "" || strings.Contains(rel, "..") {
+		return
+	}
+	abs := filepath.Join(ix.root, filepath.FromSlash(rel))
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			ix.mu.Lock()
+			defer ix.mu.Unlock()
+			idx := sort.Search(len(ix.files), func(i int) bool { return ix.files[i].Path >= rel })
+			if idx < len(ix.files) && ix.files[idx].Path == rel {
+				ix.files = append(ix.files[:idx], ix.files[idx+1:]...)
+			}
+			parentDir := ""
+			if lastSlash := strings.LastIndexByte(rel, '/'); lastSlash >= 0 {
+				parentDir = rel[:lastSlash]
+			}
+			if kids, ok := ix.children[parentDir]; ok {
+				filtered := kids[:0]
+				for _, k := range kids {
+					if k.Path != rel {
+						filtered = append(filtered, k)
+					}
+				}
+				ix.children[parentDir] = filtered
+			}
+			delete(ix.children, rel)
+		}
+		return
+	}
+
+	ig := ignore.New(nil).Child(ignore.ReadGitignore(ix.root, ""))
+	parts := strings.Split(rel, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if vcsDirs[parts[i]] {
+			return
+		}
+		subDir := strings.Join(parts[:i+1], "/")
+		if ig.Match(subDir, true) {
+			return
+		}
+		absSub := filepath.Join(ix.root, filepath.FromSlash(subDir))
+		if extra := ignore.ReadGitignore(absSub, subDir); len(extra) > 0 {
+			ig = ig.Child(extra)
+		}
+	}
+
+	isDir := info.IsDir()
+	name := parts[len(parts)-1]
+	if isDir && vcsDirs[name] {
+		return
+	}
+	ignored := ig.Match(rel, isDir)
+	var size int64
+	if !isDir {
+		size = info.Size()
+	}
+
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if ix.children == nil {
+		ix.children = map[string][]Node{}
+	}
+
+	for i := 0; i < len(parts)-1; i++ {
+		parentDir := ""
+		if i > 0 {
+			parentDir = strings.Join(parts[:i], "/")
+		}
+		subDir := strings.Join(parts[:i+1], "/")
+		segName := parts[i]
+		kids := ix.children[parentDir]
+		found := false
+		for _, k := range kids {
+			if k.Name == segName && k.Dir {
+				found = true
+				break
+			}
+		}
+		if !found {
+			ix.children[parentDir] = append(ix.children[parentDir], Node{
+				Name: segName,
+				Path: subDir,
+				Dir:  true,
+			})
+			sortNodes(ix.children[parentDir])
+		}
+		if _, ok := ix.children[subDir]; !ok {
+			ix.children[subDir] = []Node{}
+		}
+	}
+
+	parentDir := ""
+	if len(parts) > 1 {
+		parentDir = strings.Join(parts[:len(parts)-1], "/")
+	}
+	kids := ix.children[parentDir]
+	foundNode := false
+	for i := range kids {
+		if kids[i].Path == rel {
+			kids[i].Size = size
+			kids[i].Dir = isDir
+			kids[i].Ignored = ignored
+			foundNode = true
+			break
+		}
+	}
+	if !foundNode {
+		node := Node{
+			Name:    name,
+			Path:    rel,
+			Dir:     isDir,
+			Size:    size,
+			Ignored: ignored,
+		}
+		if !isDir && !ignored {
+			if ix.gitStatusMap != nil {
+				node.Status = ix.gitStatusMap[rel]
+			}
+			if ix.gitStagedMap != nil {
+				node.Staged = ix.gitStagedMap[rel]
+			}
+			if ix.gitYourStatusMap != nil {
+				node.YourStatus = ix.gitYourStatusMap[rel]
+			}
+		}
+		ix.children[parentDir] = append(ix.children[parentDir], node)
+		sortNodes(ix.children[parentDir])
+	}
+	if isDir && !ignored {
+		if _, ok := ix.children[rel]; !ok {
+			ix.children[rel] = []Node{}
+		}
+		return
+	}
+	if !isDir && !ignored {
+		idx := sort.Search(len(ix.files), func(i int) bool { return ix.files[i].Path >= rel })
+		entry := FileEntry{
+			Path:      rel,
+			Name:      name,
+			Size:      size,
+			Lower:     toLowerIfNeeded(rel),
+			NameStart: len(rel) - len(name),
+		}
+		if idx < len(ix.files) && ix.files[idx].Path == rel {
+			ix.files[idx] = entry
+		} else {
+			ix.files = append(ix.files, FileEntry{})
+			copy(ix.files[idx+1:], ix.files[idx:])
+			ix.files[idx] = entry
+		}
+	}
+}
+

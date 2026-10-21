@@ -23,8 +23,8 @@ import { initMetrics, initLspMenu, refreshLspMenu, initStatusFit, updateMetricsD
 import { initSettings } from './settings.js';
 import { initVim } from './vim.js';
 import { initImageViewer } from './imageview.js';
-import { initGitStream } from './gitstream.js';
-import { initGitPanel } from './gitpanel.js';
+import { initGitStream, triggerRefresh } from './gitstream.js';
+import { initGitPanel, syncGitPanelMeta } from './gitpanel.js';
 import { initPR } from './pr.js';
 import { initLineComment } from './linecomment.js';
 import { initUnpushed, refreshUnpushed } from './unpushed.js';
@@ -96,6 +96,7 @@ initPRScope();
   if (S.meta.metrics) updateMetricsDisplay(S.meta.metrics);
   refreshLspMenu();
   updateSidebarToggleState();
+  syncGitPanelMeta();
   applyAgentMeta();
   initPR();
   showRightInspector(); // the right sidebar starts open, on Threads when there is a harness
@@ -190,9 +191,13 @@ initPRScope();
         if (m.ready) {
           clearInterval(timer);
           S.meta = m;
+          updateSidebarToggleState();
+          syncGitPanelMeta();
           updateStatus();
+          setAutoRevealSuppressed(true);
+          await refreshTree();
+          await triggerRefresh();
           if (!initialPath) {
-            setAutoRevealSuppressed(true);
             hasGitChanges = await applyGitSidebarState();
             if (hasGitChanges) await selectChangedFileTab();
             if (inGitMode()) {
@@ -202,8 +207,8 @@ initPRScope();
             } else {
               collapseAllDirs();
             }
-            setAutoRevealSuppressed(false);
           }
+          setAutoRevealSuppressed(false);
         }
       } catch {
         clearInterval(timer);

@@ -117,3 +117,8 @@ Executing installation commands (e.g., `go install` or `npm install`) requires r
 1. The `Origin` header must exactly match the `Host` header.
 1. The `Host` header must resolve strictly to `127.0.0.1`, `[::1]`, or `localhost`.
 1. Commands are pulled strictly from the internal `lspRegistry`, and the client request cannot provide or modify the command string.
+
+## 7. Diagnostics (`textDocument/publishDiagnostics`) & Idle Server Reaping
+
+- **Diagnostics**: `lspClient` advertises `publishDiagnostics: {}` during `initialize` and parses incoming `textDocument/publishDiagnostics` notifications into per-file `LSPDiagnostic` slices (errors and warnings). `/api/file` and `/api/lsp/diagnostics` expose these diagnostics so both the virtualized code viewer (`renderer.js`) and diff viewer (`diff.js`) render inline diagnostic badges via CSS `data-diag` attributes without polluting DOM text nodes.
+- **Idle Reaping (`ReapIdle`)**: Each `lspClient` records its last activity timestamp (`lastUsed`). The server's background scavenger (`Server.scavenge()`) calls `lspManager.ReapIdle(10 * time.Minute)`, shutting down idle language servers without marking them permanently stopped so they respawn transparently on the next request.

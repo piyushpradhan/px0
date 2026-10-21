@@ -126,6 +126,11 @@ A rebase or merge left half-done from a terminal is shown the same way when px0 
 | Hash chip | Recent Commits | Copy the short SHA |
 | `↑` / `↓`, `→` / `←` | Recent Commits | Move between commits and files; expand / collapse |
 | ‹ › | Pinned tab's diff strip | Previous / next file in the commit |
+| `[c` / `]c` | Diff View | Jump to previous / next diff hunk |
+| `[f` / `]f` | Diff View / Editor | Step to previous / next changed file |
+| **✓ Viewed** | Diff Review Strip | Mark file as reviewed and auto-advance to next unviewed changed file |
+| **↕ Expand** | Diff Hunk Header (`@@ ... @@`) | Expand 15 lines of surrounding file context inline without leaving diff view |
+| **Stage / Unstage / Discard** | Diff Hunk Header (`@@ ... @@`) | Stage, unstage, or discard a single diff hunk via `git apply --unidiff-zero` |
 
 ---
 

@@ -763,6 +763,12 @@ type wbEntry struct {
 	Git  bool   `json:"git,omitempty"`
 }
 
+// hasGitMarker reports whether dir has a .git directory or file.
+func hasGitMarker(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
 func (wb *workbench) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	if !trustedGet(w, r) {
 		return
@@ -797,16 +803,14 @@ func (wb *workbench) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		if !isDir {
 			continue
 		}
-		_, gitErr := os.Lstat(filepath.Join(full, ".git"))
-		out = append(out, wbEntry{Name: name, Path: full, Git: gitErr == nil})
+		out = append(out, wbEntry{Name: name, Path: full, Git: hasGitMarker(full)})
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
 	parent := filepath.Dir(dir)
 	if parent == dir {
 		parent = ""
 	}
-	_, gitErr := os.Lstat(filepath.Join(dir, ".git"))
-	writeJSON(w, map[string]any{"path": dir, "parent": parent, "git": gitErr == nil, "entries": out})
+	writeJSON(w, map[string]any{"path": dir, "parent": parent, "git": hasGitMarker(dir) || gitAvailable(dir), "entries": out})
 }
 
 // handleComplete completes the folder name being typed: q's last path
@@ -859,8 +863,7 @@ func (wb *workbench) handleComplete(w http.ResponseWriter, r *http.Request) {
 		if !isDir {
 			continue
 		}
-		_, gitErr := os.Lstat(filepath.Join(full, ".git"))
-		out = append(out, wbEntry{Name: name, Path: typedDir + name + "/", Git: gitErr == nil})
+		out = append(out, wbEntry{Name: name, Path: typedDir + name + "/", Git: hasGitMarker(full)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		// Exact-case prefix matches first, then alphabetical.
@@ -1452,7 +1455,7 @@ func scanForClone(ctx context.Context, roots []string, repo string) string {
 			}
 			seen[p] = true
 			if strings.EqualFold(e.Name(), name) {
-				if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
+				if hasGitMarker(p) {
 					if top := cloneOf(p, repo); top != "" {
 						return top
 					}

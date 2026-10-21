@@ -5,6 +5,7 @@ import { updateStatus, setStatusNote, setLspState } from './status.js';
 import { openFile } from './tabs.js';
 import { renderResults, runSearch } from './search.js';
 import { inspectReferences, showRightInspector } from './inspector.js';
+import { centerEditLine, editTextarea } from './editview.js';
 
 /* Language servers answer precisely but can take a long time to wake up, while
    the regex index answers in milliseconds and is always there. So: use the
@@ -134,6 +135,10 @@ export function groupHits(hits) {
 export function flashFind(q) {
   const d = doc_();
   if (!d || !q) return;
+  if (d.isEditing && editTextarea) {
+    centerEditLine(d.cur, q);
+    return;
+  }
   S.find = { q, cs: false, hits: [{ line: d.cur, n: 0 }], byLine: new Set([d.cur]), active: 0 };
   setTimeout(paint, 0);
 }

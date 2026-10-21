@@ -542,3 +542,77 @@ func TestWorkbenchSettingsOnlyTakesTheme(t *testing.T) {
 		t.Fatalf("theme %q", got)
 	}
 }
+
+func TestWorkbenchPinAndRemove(t *testing.T) {
+	st := newTestStore(t)
+	wb := newWorkbench("/", t.TempDir(), "", nil)
+	wb.store = st
+
+	it := wbDirItem("/work/test-repo")
+	if err := st.Record(it); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pin item
+	w := postJSON(t, wb, "/api/wb/pin", `{"id":"`+it.ID+`","pinned":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pin failed: %d %s", w.Code, w.Body.String())
+	}
+	got, ok := st.Get(it.ID)
+	if !ok || !got.Pinned {
+		t.Fatalf("item not pinned: %+v", got)
+	}
+
+	// Unpin item
+	w = postJSON(t, wb, "/api/wb/pin", `{"id":"`+it.ID+`","pinned":false}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unpin failed: %d", w.Code)
+	}
+	got, _ = st.Get(it.ID)
+	if got.Pinned {
+		t.Fatal("item should be unpinned")
+	}
+
+	// Remove item
+	w = postJSON(t, wb, "/api/wb/remove", `{"id":"`+it.ID+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("remove failed: %d", w.Code)
+	}
+	if _, ok := st.Get(it.ID); ok {
+		t.Fatal("item was not removed")
+	}
+}
+
+func TestWorkbenchLockLifecycle(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// No lock initially
+	if url := runningWorkbench(); url != "" {
+		t.Errorf("expected empty runningWorkbench, got %q", url)
+	}
+
+	// Write lock with a mock server that answers ping
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/wb/ping" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"workbench":true}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	writeWorkbenchLock(ts.URL)
+
+	// Verify runningWorkbench finds it
+	if u := runningWorkbench(); u != ts.URL {
+		t.Errorf("runningWorkbench = %q, want %q", u, ts.URL)
+	}
+
+	// Remove lock
+	removeWorkbenchLock()
+	if u := runningWorkbench(); u != "" {
+		t.Errorf("runningWorkbench after remove = %q, want empty", u)
+	}
+}
+

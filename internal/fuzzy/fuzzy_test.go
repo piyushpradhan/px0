@@ -1,6 +1,7 @@
 package fuzzy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -109,3 +110,178 @@ func TestIsBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestFuzzyLimitAndHeap(t *testing.T) {
+	t.Parallel()
+
+	paths := []string{
+		"a/b/c/server.go",
+		"server.go",
+		"src/server.go",
+		"pkg/net/server.go",
+		"cmd/server/server.go",
+		"internal/server.go",
+		"vendor/server.go",
+	}
+	items := make([]Item, len(paths))
+	for i, p := range paths {
+		items[i] = NewItem(p)
+	}
+
+	// Request limit of 3 when 7 matches exist - tests min-heap, worseResult and siftDownResult
+	res := Find(items, "server", 3)
+	if len(res) != 3 {
+		t.Fatalf("expected 3 results with limit 3, got %d", len(res))
+	}
+	// Best match should be top level server.go
+	if res[0].Path != "server.go" {
+		t.Errorf("expected top result 'server.go', got %q", res[0].Path)
+	}
+
+	// Test no limit (limit <= 0)
+	all := Find(items, "server", 0)
+	if len(all) != len(paths) {
+		t.Fatalf("expected %d results with limit 0, got %d", len(paths), len(all))
+	}
+}
+
+func TestFuzzyCamelCaseAndHeapDirect(t *testing.T) {
+	t.Parallel()
+
+	// 1. CamelCase hump test
+	camelItem := NewItem("fooBarBaz.go")
+	s1, _, ok1 := Score("bb", "bb", camelItem.Path, camelItem.Lower, camelItem.NameStart, nil)
+	if !ok1 || s1 <= 0 {
+		t.Fatalf("expected positive score for camelCase hump, got %d", s1)
+	}
+
+	// 2. worseResult ties and comparisons
+	r1 := Result{Score: 10, Path: "z.go"}
+	r2 := Result{Score: 10, Path: "a.go"}
+	r3 := Result{Score: 5, Path: "m.go"}
+	if !worseResult(r1, r2) {
+		t.Errorf("expected r1 to be worse than r2 due to path tie-break")
+	}
+	if worseResult(r2, r1) {
+		t.Errorf("expected r2 not to be worse than r1")
+	}
+	if !worseResult(r3, r1) {
+		t.Errorf("expected r3 to be worse than r1 due to lower score")
+	}
+
+	// 3. siftDownResult branches: right < left, left >= n, swap
+	h := []Result{
+		{Score: 100, Path: "root"},
+		{Score: 10, Path: "left"},
+		{Score: 5, Path: "right"},
+		{Score: 20, Path: "c1"},
+		{Score: 30, Path: "c2"},
+	}
+	siftDownResult(h, 0)
+	if h[0].Score != 5 {
+		t.Errorf("expected root score to be 5 after siftDown, got %d", h[0].Score)
+	}
+
+	// siftDown on leaf
+	siftDownResult(h, len(h)-1)
+
+	// 4. Find with empty items
+	emptyRes := Find([]Item{}, "test", 10)
+	if len(emptyRes) != 0 {
+		t.Errorf("expected 0 results, got %d", len(emptyRes))
+	}
+
+	// 5. Find with > 1024 items to trigger multi-worker, worker bounds, and all[:limit]
+	largeSet := generateBenchItems(2048)
+	limited := Find(largeSet, "server", 5)
+	if len(limited) != 5 {
+		t.Errorf("expected 5 results from multi-worker search, got %d", len(limited))
+	}
+}
+
+func BenchmarkFuzzyFind(b *testing.B) {
+	paths := []string{
+		"internal/server/http_server.go",
+		"cmd/px0/main.go",
+		"web/app.js",
+		"pkg/util/strings.go",
+		"vendor/github.com/x/http/server.go",
+		"httpserver.go",
+		"src/core/router.go",
+		"api/v1/endpoints.go",
+	}
+	items := make([]Item, len(paths))
+	for i, p := range paths {
+		items[i] = NewItem(p)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = Find(items, "httpserver", 5)
+	}
+}
+
+func BenchmarkScore(b *testing.B) {
+	item := NewItem("internal/server/http_server.go")
+	scratch := make([]int, 0, 64)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = Score("httpserver", "httpserver", item.Path, item.Lower, item.NameStart, scratch)
+	}
+}
+
+func generateBenchItems(n int) []Item {
+	dirs := []string{"src", "pkg", "internal", "cmd", "pkg/util", "web/src/components", "api/v1", "services"}
+	names := []string{"server.go", "client.go", "handler.go", "types.go", "utils.go", "index.ts", "app.py", "main.rs"}
+	entries := make([]Item, n)
+	for i := 0; i < n; i++ {
+		d := dirs[i%len(dirs)]
+		name := fmt.Sprintf("%d_%s", i, names[i%len(names)])
+		p := fmt.Sprintf("%s/%s", d, name)
+		entries[i] = Item{
+			Path:      p,
+			Name:      name,
+			Lower:     strings.ToLower(p),
+			NameStart: len(p) - len(name),
+		}
+	}
+	return entries
+}
+
+func BenchmarkFuzzyFind_1K(b *testing.B) {
+	files := generateBenchItems(1000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "handler", 50)
+	}
+}
+
+func BenchmarkFuzzyFind_10K(b *testing.B) {
+	files := generateBenchItems(10000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "handler", 50)
+	}
+}
+
+func BenchmarkFuzzyFind_50K(b *testing.B) {
+	files := generateBenchItems(50000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "srvutil", 50)
+	}
+}
+
+func BenchmarkFuzzyFindShortQuery_50K(b *testing.B) {
+	files := generateBenchItems(50000)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = Find(files, "in", 50)
+	}
+}
+

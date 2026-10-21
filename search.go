@@ -201,44 +201,60 @@ func (s *searcher) defRegexForExt(ext string) *regexp.Regexp {
 // containsFoldASCII reports whether lit (already ASCII-lowercased) occurs in data
 // under ASCII case-folding, without allocating or copying data.
 func containsFoldASCII(data, lit []byte) bool {
-	if len(lit) == 0 {
+	n := len(lit)
+	if n == 0 {
 		return true
 	}
-	if len(data) < len(lit) {
+	if len(data) < n {
 		return false
 	}
-	b0 := lit[0]
-	var u0 byte
-	hasUpper := b0 >= 'a' && b0 <= 'z'
-	if hasUpper {
-		u0 = b0 - ('a' - 'A')
+	// Prefer a caseless byte in lit (e.g. '_', '.', '(', digits, whitespace) as
+	// the SIMD IndexByte anchor so we only scan once per candidate position.
+	anchor := 0
+	for k := 0; k < n; k++ {
+		if c := lit[k]; c < 'a' || c > 'z' {
+			anchor = k
+			break
+		}
 	}
-	limit := len(data) - len(lit)
+	bA := lit[anchor]
+	hasUpper := bA >= 'a' && bA <= 'z'
+	var uA byte
+	if hasUpper {
+		uA = bA - ('a' - 'A')
+	}
+	limit := len(data) - n
 	for i := 0; i <= limit; {
+		sub := data[i+anchor : limit+1+anchor]
+		var off int
 		if !hasUpper {
-			idx := bytes.IndexByte(data[i:limit+1], b0)
-			if idx < 0 {
+			off = bytes.IndexByte(sub, bA)
+			if off < 0 {
 				return false
 			}
-			i += idx
 		} else {
-			// Advance to next occurrence of b0 or u0
-			found := -1
-			sub := data[i : limit+1]
-			for j := 0; j < len(sub); j++ {
-				c := sub[j]
-				if c == b0 || c == u0 {
-					found = j
-					break
+			// Scan for lowercase bA first via SIMD; only scan the prefix before off
+			// for uppercase uA so we never scan past the first match.
+			off = bytes.IndexByte(sub, bA)
+			if off != 0 {
+				subUp := sub
+				if off > 0 {
+					subUp = sub[:off]
+				}
+				if uOff := bytes.IndexByte(subUp, uA); uOff >= 0 {
+					off = uOff
 				}
 			}
-			if found < 0 {
+			if off < 0 {
 				return false
 			}
-			i += found
 		}
+		i += off
 		match := true
-		for k := 1; k < len(lit); k++ {
+		for k := 0; k < n; k++ {
+			if k == anchor {
+				continue
+			}
 			c := data[i+k]
 			if c >= 'A' && c <= 'Z' {
 				c += 'a' - 'A'

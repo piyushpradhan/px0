@@ -631,14 +631,10 @@ func (s *Server) prOrFail(w http.ResponseWriter) bool {
 	return true
 }
 
-func (s *Server) handlePRMeta(w http.ResponseWriter, r *http.Request) {
-	if !s.prOrFail(w) {
-		return
-	}
-	p := s.pr
+func (p *prSession) metaMap(files map[string]string) map[string]any {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	writeJSON(w, map[string]any{
+	return map[string]any{
 		"number":          p.meta.Number,
 		"title":           p.meta.Title,
 		"author":          p.meta.Author,
@@ -653,8 +649,15 @@ func (s *Server) handlePRMeta(w http.ResponseWriter, r *http.Request) {
 		"diffBaseWarning": p.diffBaseWarning,
 		"headSHA":         p.meta.HeadSHA,
 		"url":             p.target.URL,
-		"files":           s.ix.PRFiles(),
-	})
+		"files":           files,
+	}
+}
+
+func (s *Server) handlePRMeta(w http.ResponseWriter, r *http.Request) {
+	if !s.prOrFail(w) {
+		return
+	}
+	writeJSON(w, s.pr.metaMap(s.ix.PRFiles()))
 }
 
 // handlePRExistingComments fetches every comment already posted on the PR

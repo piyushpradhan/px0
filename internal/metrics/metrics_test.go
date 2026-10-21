@@ -40,3 +40,16 @@ func TestMetricsCollection(t *testing.T) {
 		t.Errorf("CPU usage should be non-negative, got %f and %f", usage, usage2)
 	}
 }
+
+func BenchmarkReadProcessRSS(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = ReadProcessRSS()
+	}
+}
+
+func BenchmarkCollectMetrics(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = Collect(0, false)
+	}
+}
+

@@ -2,6 +2,7 @@
 import { $, S, doc_, apiPostJson, LH } from './state.js';
 import { vp, showToast, flashActionSuccess } from './ui.js';
 import { drawTabs, loadGutter, reloadOpenTabs } from './tabs.js';
+import { lineTopY } from './renderer.js';
 import { syncPreview, previewing, previewTopLine, previewKind } from './markdown.js';
 import { syncDiffView } from './diff.js';
 import { triggerRefresh } from './gitstream.js';
@@ -118,9 +119,55 @@ function editLH() {
 
 // Top of line n in the textarea. Wrapped lines are taller than one line;
 // their gutter rows were sized to match, so read the offset from there.
-function editLineTop(n) {
+export function editLineTop(n) {
   const row = S.wrap && editGutterEl?.children[n - 1];
   return row ? row.offsetTop : (n - 1) * editLH();
+}
+
+export function centerEditLine(n, startChar, endChar) {
+  if (!editTextarea || !editViewEl || editViewEl.hidden) return;
+  const d = doc_();
+  const text = editTextarea.value;
+  const lines = text.split('\n');
+  const lineCount = lines.length;
+  const targetLine = Math.max(1, Math.min(n, lineCount));
+
+  if (typeof startChar === 'string' && startChar) {
+    const q = startChar;
+    const lineStr = lines[targetLine - 1] || '';
+    const idx = lineStr.toLowerCase().indexOf(q.toLowerCase());
+    let offset = 0;
+    for (let i = 0; i < targetLine - 1 && i < lineCount; i++) {
+      offset += lines[i].length + 1;
+    }
+    if (idx >= 0) {
+      startChar = offset + idx;
+      endChar = startChar + q.length;
+    } else {
+      startChar = offset;
+      endChar = offset;
+    }
+  }
+
+  if (typeof startChar === 'number' && typeof endChar === 'number') {
+    editTextarea.focus();
+    editTextarea.setSelectionRange(startChar, endChar);
+  } else {
+    let offset = 0;
+    for (let i = 0; i < targetLine - 1 && i < lineCount; i++) {
+      offset += lines[i].length + 1;
+    }
+    editTextarea.focus();
+    editTextarea.setSelectionRange(offset, offset);
+  }
+
+  const top = Math.max(0, editLineTop(targetLine) - Math.max(0, editTextarea.clientHeight / 2 - editLH() * 2));
+  editTextarea.scrollTop = top;
+  if (editGutterEl) editGutterEl.scrollTop = top;
+  if (d) {
+    d.cur = targetLine;
+    d.editScrollTop = top;
+  }
 }
 
 // The first line visible at the top of the textarea.
@@ -253,7 +300,7 @@ export async function exitEditMode(force = false) {
     return;
   }
   d.cur = top;
-  vp.scrollTop = (top - 1) * LH;
+  vp.scrollTop = lineTopY(top, d);
   if (previewKind(d)) d.mdLine = top;
   // Reloads the source and, through a fresh doc, the preview: a save made in
   // edit mode leaves both stale.
@@ -317,6 +364,13 @@ export function initEditView() {
         d.dirty = true;
         drawTabs();
       }
+    }
+    if (S.find && S.find.editing) {
+      S.find = null;
+      const cnt = $('#find-count');
+      if (cnt) cnt.textContent = '—';
+      const mm = $('#minimap-hits');
+      if (mm) mm.innerHTML = '';
     }
     if (S.wrap) scheduleUpdateGutter();
     else updateGutter();

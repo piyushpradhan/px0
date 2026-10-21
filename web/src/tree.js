@@ -7,6 +7,7 @@ import { closeSelMenu } from './selbar.js';
 import { emit, on } from './bus.js';
 import { isAutoRevealEnabled } from './settings.js';
 import { promptNewItem } from './newitem.js';
+import { handleGitStatus, triggerRefresh } from './gitstream.js';
 
 export const treeEl = $('#tree');
 const treeMenu = $('#tree-menu');
@@ -60,8 +61,10 @@ export async function drawTree(dir, container, depth, isCurrent) {
     const youBadge = isYou ? '<span class="gs-you-tag" title="Modified by you in this review session">YOU</span>' : '';
     const badge = g ? '<span class="gs' + (isYou ? ' gs-you' : '') + '" title="' + (isYou ? 'Your change (' + c.yourStatus + '), git: ' + g[1] : 'git: ' + g[1]) + '">' + esc(c.status) + '</span>' + youBadge : '';
     const showTick = S.meta?.pr ? isYou : !!g;
-    const tick = showTick ? '<button class="stage-tick' + (c.staged ? ' staged' : '') + '" data-stage="' + esc(c.path) + '" title="' + (c.staged ? 'Unstage' : 'Stage') + '"></button>' : '';
-    return '<div class="tr file' + ig + gc + yc + '" data-file="' + esc(c.path) + '"' + (c.status ? ' data-st="' + esc(c.status) + '"' : '') + (c.yourStatus ? ' data-yst="' + esc(c.yourStatus) + '"' : '') + ' style="padding-left:' + (pad + 12) + 'px" title="Open ' + esc(c.path) + note + '">' +
+    const isStaged = !!(showTick && c.staged);
+    const sc = isStaged ? ' is-staged' : '';
+    const tick = showTick ? '<button type="button" class="stage-tick' + (isStaged ? ' staged' : '') + '" data-stage="' + esc(c.path) + '" aria-pressed="' + (isStaged ? 'true' : 'false') + '" title="' + (isStaged ? 'Staged — click to unstage' : 'Stage file') + '"></button>' : '';
+    return '<div class="tr file' + ig + gc + yc + sc + '" data-file="' + esc(c.path) + '"' + (c.status ? ' data-st="' + esc(c.status) + '"' : '') + (c.yourStatus ? ' data-yst="' + esc(c.yourStatus) + '"' : '') + ' style="padding-left:' + (pad + 12) + 'px" title="Open ' + esc(c.path) + note + '">' +
       '<span class="ic" data-t="' + fileKind(c.name) + '"></span><span class="nm">' + esc(c.name) + '</span>' + badge + tick + menuBtn + '</div>';
   }).join('');
   relabelTreeBadges();
@@ -351,7 +354,7 @@ export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged =
   for (const fileRow of dirtyFiles) {
     const p = fileRow.dataset.file;
     if (!statuses[p]) {
-      fileRow.classList.remove('dirty', 'git-M', 'git-A', 'git-D', 'git-untracked', 'git-R', 'your-change');
+      fileRow.classList.remove('dirty', 'is-staged', 'git-M', 'git-A', 'git-D', 'git-untracked', 'git-R', 'your-change');
       const badge = fileRow.querySelector('.gs');
       if (badge) badge.remove();
       const youTag = fileRow.querySelector('.gs-you-tag');
@@ -397,21 +400,25 @@ export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged =
       }
 
       const showTick = S.meta?.pr ? isYou : true;
+      const isStaged = !!(showTick && staged[p]);
+      fileRow.classList.toggle('is-staged', isStaged);
       let tick = fileRow.querySelector('.stage-tick');
       if (showTick) {
         if (!tick) {
           tick = document.createElement('button');
+          tick.type = 'button';
           tick.className = 'stage-tick';
           tick.dataset.stage = p;
           fileRow.appendChild(tick);
         }
-        tick.classList.toggle('staged', !!staged[p]);
-        tick.title = staged[p] ? 'Unstage' : 'Stage';
+        tick.classList.toggle('staged', isStaged);
+        tick.setAttribute('aria-pressed', isStaged ? 'true' : 'false');
+        tick.title = isStaged ? 'Staged — click to unstage' : 'Stage file';
       } else if (tick) {
         tick.remove();
       }
     } else {
-      fileRow.classList.remove('dirty', 'your-change');
+      fileRow.classList.remove('dirty', 'is-staged', 'your-change');
       const badge = fileRow.querySelector('.gs');
       if (badge) badge.remove();
       const youTag = fileRow.querySelector('.gs-you-tag');
@@ -632,14 +639,27 @@ export function initTree() {
     const tick = e.target.closest('.stage-tick');
     if (tick) {
       e.stopPropagation();
+      e.preventDefault();
       const path = tick.dataset.stage;
-      const staged = tick.classList.toggle('staged'); // optimistic; the git-status stream reconciles it
-      tick.title = staged ? 'Unstage' : 'Stage';
+      const staged = !tick.classList.contains('staged');
+      const applyOptimistic = s => {
+        for (const el of $$('.stage-tick[data-stage="' + CSS.escape(path) + '"]')) {
+          el.classList.toggle('staged', s);
+          el.setAttribute('aria-pressed', s ? 'true' : 'false');
+          el.title = s ? 'Staged — click to unstage' : 'Stage file';
+          el.closest('.tr.file')?.classList.toggle('is-staged', s);
+        }
+      };
+      applyOptimistic(staged);
       try {
-        await apiPostJson(staged ? '/api/git/stage' : '/api/git/unstage', { path });
+        const res = await apiPostJson(staged ? '/api/git/stage' : '/api/git/unstage', { path });
+        if (res && res.git !== undefined) {
+          await handleGitStatus(res);
+        } else {
+          await triggerRefresh();
+        }
       } catch (err) {
-        tick.classList.toggle('staged', !staged);
-        tick.title = staged ? 'Stage' : 'Unstage';
+        applyOptimistic(!staged);
         emit('git:error', { title: staged ? 'Could not stage' : 'Could not unstage', message: err.message || '' });
       }
       return;

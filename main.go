@@ -264,6 +264,9 @@ func main() {
 	// Index workspace asynchronously so the server and UI respond in <1ms.
 	go func() {
 		ix.Build()
+		if pxSrv.gitWatcher != nil {
+			pxSrv.gitWatcher.Trigger()
+		}
 		n, _, ms := ix.Stats()
 		ui.Status("ok", fmt.Sprintf("indexed %d files", n), fmt.Sprintf("%dms", ms), 0, os.Stdout)
 		tLSP := time.Now()

@@ -5,7 +5,7 @@ import { vp, rowsEl, copyToClipboard, copyRichToClipboard, showToast } from './u
 import { render, toPos, rowFor } from './renderer.js';
 import { findReferences } from './lsp.js';
 import { fitStatus } from './status.js';
-import { domToMarkdown, getFragmentPlainText, getFragmentHtml, getMarkdownRangeLines, getDocRaw } from './markdown.js';
+import { domToMarkdown, getFragmentPlainText, getFragmentHtml, getMarkdownRangeLines, getDocRaw, previewTopLine } from './markdown.js';
 
 /* While code is selected, the left of the status bar trades its navigation
    buttons for actions on the selection, and hands them back once the selection
@@ -316,16 +316,16 @@ export function runSelectionAction(act, triggerBtn = null, override = null) {
     if (act === 'thread') {
       const d = doc_();
       if (d && threadHandler) {
-        const line = d.cur || 1;
-        threadHandler({ text: (d.lines && d.lines[line - 1]) || '', l1: line, l2: line, path: d.path });
+        const line = (mdviewEl && !mdviewEl.hidden) ? previewTopLine() : (d.cur || 1);
+        threadHandler({ text: lineToText((d.lines && d.lines[line - 1]) || ''), l1: line, l2: line, path: d.path });
         return true;
       }
     }
     if (act === 'agent-edit') {
       const d = doc_();
       if (d && agentHandler) {
-        const line = d.cur || 1;
-        const text = (d.lines && d.lines[line - 1]) || '';
+        const line = (mdviewEl && !mdviewEl.hidden) ? previewTopLine() : (d.cur || 1);
+        const text = lineToText((d.lines && d.lines[line - 1]) || '');
         agentHandler({ text, l1: line, l2: line, path: d.path });
         return true;
       }

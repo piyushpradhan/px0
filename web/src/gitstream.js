@@ -157,7 +157,7 @@ function disconnect() {
   }
 }
 
-async function handleGitStatus(data) {
+export async function handleGitStatus(data) {
   if (!data) return;
 
   // Identical snapshot to the last one applied (refocus, SSE reconnect): the
@@ -171,6 +171,7 @@ async function handleGitStatus(data) {
   }
   lastSig = sig;
 
+  if (S.meta && data.git !== undefined) S.meta.git = !!data.git;
   if (data.gitChanges !== undefined) S.meta.gitChanges = data.gitChanges;
   if (data.gitFiles !== undefined) S.meta.gitFiles = data.gitFiles;
 

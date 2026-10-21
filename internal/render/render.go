@@ -1,17 +1,29 @@
 package render
 
 import (
+	"bytes"
 	"container/list"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 const (
@@ -42,7 +54,8 @@ const (
 	// makes every later chunk a map lookup. Above it, windows stay the only path.
 	bgLimit = 2 << 20
 
-	cacheBudget = 512 << 20
+	cacheBudget     = 64 << 20
+	idleCacheBudget = 8 << 20
 )
 
 // classFor maps a chroma token type onto a short CSS class. Short names matter:
@@ -181,10 +194,6 @@ type Doc struct {
 }
 
 func NewDoc(src, rel string) *Doc {
-	return newDoc(src, rel)
-}
-
-func newDoc(src, rel string) *Doc {
 	total := strings.Count(src, "\n") + 1
 	d := &Doc{
 		src: src, Total: total, chunks: map[int][]string{},
@@ -246,15 +255,6 @@ func (d *Doc) Raw(n int) string {
 		return ""
 	}
 	return d.src[start:end]
-}
-
-// RawLines returns every source line, for the offset conversions LSP needs.
-func (d *Doc) RawLines() []string {
-	out := make([]string, d.Total)
-	for i := range out {
-		out[i] = d.Raw(i + 1)
-	}
-	return out
 }
 
 // Lines returns highlighted HTML for the half-open line range [start, end).
@@ -571,6 +571,25 @@ func EvictAll() {
 	cache.clear()
 }
 
+// Scavenge trims the syntax highlighting cache down to idleCacheBudget by
+// evicting the least recently used documents. The most recently used document
+// is always retained.
+func Scavenge() {
+	cache.scavenge(idleCacheBudget)
+}
+
+func (c *hlCache) scavenge(budget int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.used > budget && c.ll.Len() > 1 {
+		back := c.ll.Back()
+		it := back.Value.(*hlItem)
+		c.ll.Remove(back)
+		delete(c.items, it.key)
+		c.used -= it.val.bytes
+	}
+}
+
 func (c *hlCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -580,10 +599,6 @@ func (c *hlCache) clear() {
 }
 
 func IsBinary(b []byte) bool {
-	return isBinary(b)
-}
-
-func isBinary(b []byte) bool {
 	n := len(b)
 	if n > 8000 {
 		n = 8000
@@ -617,10 +632,10 @@ func Open(abs, rel string) (*Doc, error) {
 	if err != nil {
 		return nil, err
 	}
-	if isBinary(data) {
+	if IsBinary(data) {
 		return nil, fmt.Errorf("binary file")
 	}
-	d := newDoc(strings.ReplaceAll(string(data), "\r\n", "\n"), rel)
+	d := NewDoc(strings.ReplaceAll(string(data), "\r\n", "\n"), rel)
 	d.key = key
 	cache.put(key, d)
 	return d, nil
@@ -651,10 +666,6 @@ var diffHunkRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@
 // HighlightDiff parses unified diff text into hunks and tokenises each line
 // with the Chroma lexer matched for rel, returning structured hunks with HTML.
 func HighlightDiff(rel, diffText string) []DiffHunk {
-	return highlightDiff(rel, diffText)
-}
-
-func highlightDiff(rel, diffText string) []DiffHunk {
 	if diffText == "" {
 		return []DiffHunk{}
 	}
@@ -762,4 +773,175 @@ func highlightDiff(rel, diffText string) []DiffHunk {
 	}
 
 	return hunks
+}
+
+// ------------------------------------------------------------------ markdown
+
+const (
+	// A preview renders the whole file in one pass, unlike the windowed code
+	// view, so it stops at a size that still converts in well under a second.
+	MaxMarkdownBytes = 4 << 20
+
+	// Fenced blocks larger than this are shown without highlighting.
+	maxFenceBytes = 256 << 10
+)
+
+func IsMarkdown(rel string) bool {
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".md", ".markdown":
+		return true
+	}
+	return false
+}
+
+// mdConverter renders GitHub Flavored Markdown. Raw HTML is passed through on
+// purpose, because READMEs lean on it for centred logos and <details>. Nothing
+// it produces is trusted: the browser rebuilds the result against an allowlist
+// before it reaches the page (sanitize in web/src/markdown.js).
+var mdConverter = goldmark.New(
+	goldmark.WithExtensions(extension.GFM, extension.Footnote),
+	goldmark.WithParserOptions(
+		parser.WithAutoHeadingID(),
+		parser.WithASTTransformers(util.Prioritized(lineMarker{}, 100)),
+	),
+	goldmark.WithRendererOptions(
+		html.WithUnsafe(),
+		renderer.WithNodeRenderers(util.Prioritized(fenceRenderer{}, 100)),
+	),
+)
+
+func RenderMarkdown(src []byte) (string, error) {
+	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
+	var buf bytes.Buffer
+	buf.Grow(len(src) * 2)
+	ctx := parser.NewContext(parser.WithIDs(&headingIDs{seen: map[string]bool{}}))
+	if err := mdConverter.Convert(src, &buf, parser.WithContext(ctx)); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// headingIDs makes anchors the way GitHub does, so a table of contents written
+// for GitHub (#install, #api_reference, #überblick) works here too: lower case,
+// letters, digits, - and _ kept, spaces turned into -, everything else dropped.
+type headingIDs struct{ seen map[string]bool }
+
+func (h *headingIDs) Generate(value []byte, kind ast.NodeKind) []byte {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(string(value)) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_' || r == '-':
+			b.WriteRune(unicode.ToLower(r))
+		case r == ' ':
+			b.WriteByte('-')
+		}
+	}
+	id := b.String()
+	if id == "" {
+		id = "section"
+	}
+	if h.seen[id] {
+		for i := 1; ; i++ {
+			if c := id + "-" + strconv.Itoa(i); !h.seen[c] {
+				id = c
+				break
+			}
+		}
+	}
+	h.seen[id] = true
+	return []byte(id)
+}
+
+func (h *headingIDs) Put(value []byte) { h.seen[string(value)] = true }
+
+// lineMarker tags blocks with the 1-based source line they start on
+// (data-line). The preview uses it to follow line-based navigation (outline,
+// go to line, search hits, history) and to keep its place when the reader
+// switches to the source view and back.
+type lineMarker struct{}
+
+func (lineMarker) Transform(doc *ast.Document, reader text.Reader, pc parser.Context) {
+	var newlines []int
+	for i, c := range reader.Source() {
+		if c == '\n' {
+			newlines = append(newlines, i)
+		}
+	}
+	ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch n.Kind() {
+		case ast.KindHeading, ast.KindParagraph, ast.KindList, ast.KindListItem, ast.KindBlockquote,
+			ast.KindFencedCodeBlock, ast.KindCodeBlock, extast.KindTable:
+			if off, ok := blockStart(n); ok {
+				n.SetAttributeString("data-line", strconv.Itoa(sort.SearchInts(newlines, off)+1))
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+}
+
+// blockStart finds the first source byte of a block. Containers such as lists
+// and blockquotes hold no lines of their own, so it descends to the first child
+// that does.
+func blockStart(n ast.Node) (int, bool) {
+	for ; n != nil; n = n.FirstChild() {
+		if n.Type() == ast.TypeBlock && n.Lines().Len() > 0 {
+			return n.Lines().At(0).Start, true
+		}
+	}
+	return 0, false
+}
+
+// fenceRenderer highlights code blocks with the lexers and token classes of the
+// code view, so one theme colours both.
+type fenceRenderer struct{}
+
+func (fenceRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	reg.Register(ast.KindFencedCodeBlock, renderFence)
+	reg.Register(ast.KindCodeBlock, renderFence)
+}
+
+func renderFence(w util.BufWriter, src []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if !entering {
+		return ast.WalkContinue, nil
+	}
+	lang := ""
+	if f, ok := n.(*ast.FencedCodeBlock); ok {
+		lang = string(f.Language(src))
+	}
+	var code strings.Builder
+	for i := 0; i < n.Lines().Len(); i++ {
+		seg := n.Lines().At(i)
+		code.Write(seg.Value(src))
+	}
+	w.WriteString(`<pre class="md-code"`)
+	if v, ok := n.AttributeString("data-line"); ok {
+		if s, ok := v.(string); ok {
+			w.WriteString(` data-line="` + s + `"`)
+		}
+	}
+	if lang != "" {
+		w.WriteString(` data-lang="`)
+		w.Write(util.EscapeHTML([]byte(lang)))
+		w.WriteByte('"')
+	}
+	w.WriteString("><code>")
+	w.WriteString(highlightFence(strings.TrimSuffix(code.String(), "\n"), lang))
+	w.WriteString("</code></pre>\n")
+	return ast.WalkSkipChildren, nil
+}
+
+// highlightFence colours a block whose fence names a language chroma knows.
+// Unlabelled blocks stay plain: guessing from content is slow and often wrong.
+func highlightFence(code, lang string) string {
+	var lexer chroma.Lexer
+	if lang != "" && len(code) <= maxFenceBytes {
+		lexer = lexers.Get(lang)
+	}
+	if lexer == nil {
+		return htmlEscaper.Replace(code)
+	}
+	return strings.Join(highlightLines(chroma.Coalesce(lexer), code, strings.Count(code, "\n")+1), "\n")
 }

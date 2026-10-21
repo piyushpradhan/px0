@@ -58,11 +58,11 @@ func TestWindowMatchesFullPass(t *testing.T) {
 	var checked, mismatchFiles, mismatchLines, totalLines int
 	for _, p := range files {
 		data, err := os.ReadFile(p)
-		if err != nil || isBinary(data) {
+		if err != nil || IsBinary(data) {
 			continue
 		}
 		src := strings.ReplaceAll(string(data), "\r\n", "\n")
-		d := newDoc(src, p)
+		d := NewDoc(src, p)
 		if d.Total < hlChunk+2 {
 			continue // single chunk: nothing to compare
 		}
@@ -106,11 +106,11 @@ func TestWindowMatchesFullPass(t *testing.T) {
 func TestBackgroundPassIsExact(t *testing.T) {
 	for _, p := range fixtures(t) {
 		data, err := os.ReadFile(p)
-		if err != nil || isBinary(data) {
+		if err != nil || IsBinary(data) {
 			continue
 		}
 		src := strings.ReplaceAll(string(data), "\r\n", "\n")
-		d := newDoc(src, p)
+		d := NewDoc(src, p)
 		if d.Total < hlChunk+2 {
 			continue
 		}
@@ -144,7 +144,7 @@ func TestConcurrentChunkAccess(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		sb.WriteString("func f() { /* c */ s := `raw` }\n")
 	}
-	d := newDoc(sb.String(), "x.go")
+	d := NewDoc(sb.String(), "x.go")
 
 	done := make(chan struct{})
 	go func() { d.backgroundPass(); close(done) }()
@@ -196,7 +196,7 @@ func TestGiantLinesDoNotBlowUpTheWindow(t *testing.T) {
 		sb.WriteString("\"\n")
 	}
 	src := sb.String()
-	d := newDoc(src, "giant.go")
+	d := NewDoc(src, "giant.go")
 
 	if d.MaxCols > maxReportedCols {
 		t.Errorf("MaxCols = %d, must be capped at %d so the client can size itself", d.MaxCols, maxReportedCols)
@@ -306,7 +306,7 @@ func TestEvictAllClearsCache(t *testing.T) {
 
 func TestHighlightDiff(t *testing.T) {
 	// Empty diff
-	if hunks := highlightDiff("foo.go", ""); len(hunks) != 0 {
+	if hunks := HighlightDiff("foo.go", ""); len(hunks) != 0 {
 		t.Fatalf("expected 0 hunks for empty diff, got %d", len(hunks))
 	}
 
@@ -317,7 +317,7 @@ func TestHighlightDiff(t *testing.T) {
 +	return "hello world"
  }`
 
-	hunks := highlightDiff("greet.go", diff)
+	hunks := HighlightDiff("greet.go", diff)
 	if len(hunks) != 1 {
 		t.Fatalf("expected 1 hunk, got %d", len(hunks))
 	}
@@ -358,3 +358,152 @@ func TestHighlightDiff(t *testing.T) {
 		t.Errorf("row 3 missing keyword or string class: %s", h.Rows[3].HTML)
 	}
 }
+
+func BenchmarkHighlightDiff(b *testing.B) {
+	diff := `@@ -10,3 +10,4 @@ func greet() {
+-	return "hello"
++	// new greeting
++	return "hello world"
+ }
+`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = HighlightDiff("greet.go", diff)
+	}
+}
+
+func BenchmarkNewDoc(b *testing.B) {
+	src := `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello, World!")
+}
+`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = NewDoc(src, "main.go")
+	}
+}
+
+func TestHeadingIDsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	ids := &headingIDs{seen: map[string]bool{}}
+	for _, c := range []struct{ in, want string }{
+		{"Getting Started!", "getting-started"},
+		{"snake_case API", "snake_case-api"},
+		{"Überblick", "überblick"},
+		{"Getting Started", "getting-started-1"},
+		{"???", "section"},
+	} {
+		if got := string(ids.Generate([]byte(c.in), 0)); got != c.want {
+			t.Errorf("%q: got %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRenderMarkdown(t *testing.T) {
+	t.Parallel()
+
+	if !IsMarkdown("doc.md") || !IsMarkdown("doc.markdown") || IsMarkdown("code.go") {
+		t.Errorf("IsMarkdown incorrect results")
+	}
+
+	src := []byte("# Header\n\nParagraph with **bold** and `code`.\n\n```go\nfunc main() {}\n```\n")
+	html, err := RenderMarkdown(src)
+	if err != nil {
+		t.Fatalf("RenderMarkdown returned error: %v", err)
+	}
+	if len(html) == 0 {
+		t.Fatal("expected non-empty rendered markdown")
+	}
+}
+
+func BenchmarkRenderMarkdown(b *testing.B) {
+	src := []byte("# Header\n\nParagraph with **bold** text and list:\n- item 1\n- item 2\n\n```go\npackage main\nfunc main() {}\n```\n")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = RenderMarkdown(src)
+	}
+}
+
+func BenchmarkHighlightLines_Go(b *testing.B) {
+	src := `package main
+
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
+type WorkerPool struct {
+	tasks chan func()
+	wg    sync.WaitGroup
+}
+
+func NewWorkerPool(workers int) *WorkerPool {
+	p := &WorkerPool{tasks: make(chan func(), 128)}
+	for i := 0; i < workers; i++ {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			for t := range p.tasks {
+				t()
+			}
+		}()
+	}
+	return p
+}
+`
+	d := NewDoc(src, "main.go")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = d.Lines(0, d.Total)
+	}
+}
+
+func BenchmarkHighlightLines_Python(b *testing.B) {
+	src := `import os
+import sys
+from dataclasses import dataclass
+
+@dataclass
+class Config:
+    host: str = "127.0.0.1"
+    port: int = 8080
+    debug: bool = False
+
+def run_server(cfg: Config):
+    print(f"Starting server on {cfg.host}:{cfg.port}")
+    if cfg.debug:
+        print("Debug mode enabled")
+`
+	d := NewDoc(src, "app.py")
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = d.Lines(0, d.Total)
+	}
+}
+
+func BenchmarkDocCreation(b *testing.B) {
+	src := strings.Repeat("func exampleLine() { return 42 }\n", 200)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = NewDoc(src, "example.go")
+	}
+}
+
+func BenchmarkColdHighlight_Go(b *testing.B) {
+	src := strings.Repeat("func exampleLine(x int) int { return x * 2 }\n", 200)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		d := NewDoc(src, "example.go")
+		_, _ = d.Lines(0, 300)
+	}
+}
+

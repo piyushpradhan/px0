@@ -161,10 +161,6 @@ func CompilePattern(p string) (Rule, bool) {
 	return compile(p, true)
 }
 
-func CompilePatternRegex(p string) (Rule, bool) {
-	return compile(p, false)
-}
-
 func compile(p string, fast bool) (Rule, bool) {
 	p = strings.TrimRight(p, " ")
 	if p == "" || strings.HasPrefix(p, "#") {

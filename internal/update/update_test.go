@@ -417,3 +417,39 @@ func TestAutoUpdateQuietWhenNotVerbose(t *testing.T) {
 		t.Fatalf("expected no output without -verbose, got %q", out)
 	}
 }
+
+func TestCopyOrMove(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.bin")
+	dst := filepath.Join(dir, "dst.bin")
+
+	if err := os.WriteFile(src, []byte("binary data 12345"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyOrMove(src, dst); err != nil {
+		t.Fatalf("copyOrMove failed: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("failed to read dst: %v", err)
+	}
+	if string(got) != "binary data 12345" {
+		t.Errorf("unexpected content: %s", string(got))
+	}
+}
+
+func BenchmarkCompareSemver(b *testing.B) {
+	pairs := [][2]string{
+		{"0.1.0", "0.2.0"},
+		{"v1.2.3", "1.2.4"},
+		{"0.10.0", "0.9.9"},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p := pairs[i%len(pairs)]
+		_ = compareSemver(p[0], p[1])
+	}
+}
+

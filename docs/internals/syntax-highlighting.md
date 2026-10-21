@@ -100,14 +100,18 @@ px0 maps token types to minimal 1-to-2 character CSS classes:
 
 This keeps network payloads minimal and guarantees that CSS stylesheets define colors cleanly through CSS custom properties (`--k`, `--nf`, `--s`, `--c`). During formatting, token text is HTML-escaped directly into the line's `strings.Builder` (`writeHTMLEscaped`) to avoid intermediate string allocations per token.
 
-## 5. Byte-Budgeted LRU Memory Cache
+## 5. Byte-Budgeted LRU Memory Cache & Idle Scavenging
 
 Generated HTML fragments are cached in memory using a Least Recently Used (LRU) eviction policy backed by Go's `container/list`.
 
 ```go
-const cacheBudget = 512 * 1024 * 1024 // 512 MB memory budget
+const (
+	cacheBudget     = 64 << 20 // 64 MB active memory budget
+	idleCacheBudget = 8 << 20  // 8 MB idle budget after 15s scavenger pass
+)
 ```
 
 - Every cached line entry tracks its raw string byte footprint.
 - When total cached line data exceeds `cacheBudget`, oldest entries are evicted from the tail of the LRU list until memory drops below the threshold.
+- When the server has been idle for 15 seconds, `Server.scavenge()` invokes `render.Scavenge()`, trimming the cache down to `idleCacheBudget` (8 MB) before calling `debug.FreeOSMemory()`.
 - Switching between tabs and scrolling backward reuses cached HTML strings instantly without hitting Chroma.

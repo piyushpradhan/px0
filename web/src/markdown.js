@@ -2,7 +2,7 @@
 import { $, $$, S, doc_, esc, api, isMac, MOD, LH } from './state.js';
 import { on } from './bus.js';
 import { vp, rowsEl, copyToClipboard, showToast } from './ui.js';
-import { render, paint, rowFor, markNodes } from './renderer.js';
+import { render, paint, rowFor, markNodes, lineTopY } from './renderer.js';
 import { openFile } from './tabs.js';
 import { updateStatus } from './status.js';
 import { pushHistory } from './history.js';
@@ -357,7 +357,7 @@ function sourceTopLine() {
 /* Put a source line at the top of the code view. Rows are placed by LH, which
    wrapped rows outgrow, so correct against where the row was actually painted. */
 function sourceToLine(line) {
-  vp.scrollTop = (line - 1) * LH;
+  vp.scrollTop = lineTopY(line);
   for (let i = 0; i < 3; i++) {
     paint();
     const r = rowFor(line);

@@ -2,30 +2,219 @@
 import { $, S, doc_, api, esc, LH, CHUNK, OVERSCAN } from './state.js';
 import { vp, sizer, rowsEl, editor } from './ui.js';
 
+export function getLH() {
+  return S.lh || LH;
+}
+
 export function measure() {
   const m = $('#measure');
   m.textContent = 'x'.repeat(100);
-  S.chW = m.getBoundingClientRect().width / 100 || 7.8;
+  const r = m.getBoundingClientRect();
+  S.chW = r.width / 100 || 7.8;
+  const cssLH = typeof getComputedStyle === 'function'
+    ? parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--lh'))
+    : 0;
+  S.lh = cssLH || Math.round(r.height) || LH;
+}
+
+function bottomPad() {
+  return Math.max(120, (vp.clientHeight || 0) * 0.5);
+}
+
+function htmlTextLen(s) {
+  if (!s) return 0;
+  if (s.indexOf('<') < 0 && s.indexOf('&') < 0 && s.indexOf('\t') < 0) return s.length;
+  let len = 0, inTag = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    if (inTag) {
+      if (ch === 62) inTag = false; // '>'
+    } else if (ch === 60) { // '<'
+      inTag = true;
+    } else if (ch === 38) { // '&'
+      len++;
+      const semi = s.indexOf(';', i + 1);
+      if (semi > i && semi - i <= 8) i = semi;
+    } else if (ch === 9) { // '\t'
+      len += 4 - (len % 4);
+    } else {
+      len++;
+    }
+  }
+  return len;
+}
+
+function ensureLineCols(d) {
+  const total = d.total || 0;
+  if (!d._lineCols || d._lineCols.length !== total) {
+    d._lineCols = new Int32Array(total);
+    d._lineCols.fill(-1);
+    d._maxLineCols = d.maxCols || 0;
+    d._colsChunks = new Set();
+  }
+  if (d.chunks && d.lines) {
+    for (const c of d.chunks) {
+      if (d._colsChunks.has(c)) continue;
+      d._colsChunks.add(c);
+      const start = c * CHUNK;
+      const end = Math.min(total, start + CHUNK);
+      for (let i = start; i < end; i++) {
+        if (d.lines[i] === undefined) continue;
+        const cols = htmlTextLen(d.lines[i]);
+        d._lineCols[i] = cols;
+        if (cols > (d._maxLineCols || 0)) d._maxLineCols = cols;
+      }
+    }
+  }
+}
+
+function recomputeOffsets(w, total) {
+  const h = w.heights, off = w.offsets;
+  let sum = 0;
+  off[0] = 0;
+  for (let i = 0; i < total; i++) {
+    sum += h[i];
+    off[i + 1] = sum;
+  }
+  w.dirtyOffsets = false;
+}
+
+export function ensureWrapMap(d) {
+  if (!d) return null;
+  const total = d.total || 0;
+  const lh = getLH();
+  const chW = S.chW || 7.8;
+  const digits = String(total || 1).length;
+  const gutter = S.lineNumbers ? (digits * chW + 30) : 0;
+  const vpW = vp.clientWidth || (d._wrap && d._wrap.vpW) || 800;
+  const codeW = Math.max(40, vpW - gutter - 40);
+  const colsPerLine = Math.max(1, Math.floor(codeW / chW));
+
+  ensureLineCols(d);
+
+  let w = d._wrap;
+  const widthChanged = !w || (vp.clientWidth > 0 && Math.abs(w.codeW - codeW) > 1);
+  if (!w || w.heights.length !== total || widthChanged || w.lh !== lh || Math.abs(w.chW - chW) > 0.05) {
+    const avgCols = (total > 0 && d.size > 0) ? Math.round(d.size / total) : 0;
+    const defaultRows = avgCols > colsPerLine ? Math.max(1, Math.ceil(avgCols / colsPerLine)) : 1;
+    const defaultH = defaultRows * lh;
+    const heights = new Float64Array(total);
+    heights.fill(defaultH);
+    w = {
+      vpW,
+      codeW,
+      lh,
+      chW,
+      colsPerLine,
+      heights,
+      measured: new Uint8Array(total),
+      chunkEst: new Set(),
+      offsets: new Float64Array(total + 1),
+      dirtyOffsets: true,
+    };
+    d._wrap = w;
+  }
+
+  if (d.chunks && d.lines) {
+    for (const c of d.chunks) {
+      if (w.chunkEst.has(c)) continue;
+      w.chunkEst.add(c);
+      const start = c * CHUNK;
+      const end = Math.min(total, start + CHUNK);
+      for (let i = start; i < end; i++) {
+        const cols = d._lineCols[i];
+        if (cols < 0) continue;
+        if (!w.measured[i]) {
+          const rows = cols > colsPerLine ? Math.ceil(cols / colsPerLine) : 1;
+          const estH = rows * lh;
+          if (w.heights[i] !== estH) {
+            w.heights[i] = estH;
+            w.dirtyOffsets = true;
+          }
+        }
+      }
+    }
+  }
+
+  if (w.dirtyOffsets) {
+    recomputeOffsets(w, total);
+  }
+  return w;
+}
+
+function lineIndexAtY(w, total, y) {
+  if (total <= 0 || y <= 0) return 0;
+  const off = w.offsets;
+  if (y >= off[total]) return total - 1;
+  let lo = 0, hi = total - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    if (off[mid + 1] <= y) lo = mid + 1;
+    else if (off[mid] > y) hi = mid - 1;
+    else return mid;
+  }
+  return Math.max(0, Math.min(total - 1, lo));
+}
+
+export function lineTopY(line, d = doc_()) {
+  const lh = getLH();
+  if (!d || !d.total) return Math.max(0, ((line || 1) - 1) * lh);
+  const idx = Math.max(0, Math.min(d.total - 1, (line || 1) - 1));
+  if (!S.wrap) return idx * lh;
+  const w = ensureWrapMap(d);
+  return w ? w.offsets[idx] : idx * lh;
+}
+
+export function lineHeightAt(line, d = doc_()) {
+  const lh = getLH();
+  if (!d || !d.total || !S.wrap) return lh;
+  const idx = Math.max(0, Math.min(d.total - 1, (line || 1) - 1));
+  const w = ensureWrapMap(d);
+  return w ? w.heights[idx] : lh;
+}
+
+export function lineAtScrollY(y, d = doc_()) {
+  const lh = getLH();
+  if (!d || !d.total) return Math.max(1, Math.floor(Math.max(0, y) / lh) + 1);
+  if (!S.wrap) return Math.max(1, Math.min(d.total, Math.floor(Math.max(0, y) / lh) + 1));
+  const w = ensureWrapMap(d);
+  return w ? lineIndexAtY(w, d.total, y) + 1 : 1;
 }
 
 export function layout() {
   const d = doc_();
   if (!d) return;
+  const lh = getLH();
   const digits = String(d.total).length;
   editor.style.setProperty('--gw', digits);
   const gutter = digits * S.chW + 30;
-  const w = S.wrap ? vp.clientWidth : Math.max(vp.clientWidth, gutter + (d.maxCols + 4) * S.chW);
-  sizer.style.height = (d.total * LH + Math.max(120, vp.clientHeight * 0.5)) + 'px';
-  sizer.style.width = w + 'px';
-  rowsEl.style.width = w + 'px';
+  if (S.wrap) {
+    sizer.style.width = '100%';
+    rowsEl.style.width = '100%';
+    if (!sizer.offsetHeight && d.total > 0) {
+      sizer.style.height = (d.total * lh + bottomPad()) + 'px';
+    }
+    const w = ensureWrapMap(d);
+    sizer.style.height = ((w ? w.offsets[d.total] : d.total * lh) + bottomPad()) + 'px';
+  } else {
+    ensureLineCols(d);
+    const maxCols = Math.max(d.maxCols || 0, d._maxLineCols || 0);
+    const w = Math.max(vp.clientWidth, gutter + (maxCols + 4) * S.chW);
+    sizer.style.height = (d.total * lh + bottomPad()) + 'px';
+    sizer.style.width = w + 'px';
+    rowsEl.style.width = w + 'px';
+  }
 }
 
 export function toggleWordWrap(forced) {
+  const d = doc_();
+  const topLine = d ? lineAtScrollY(vp.scrollTop, d) : 1;
   S.wrap = typeof forced === 'boolean' ? forced : !S.wrap;
   document.body.classList.toggle('word-wrap', S.wrap);
   try { localStorage.setItem('px0.wrap', S.wrap ? 'true' : 'false'); } catch {}
   updateEditorOptionControls();
   layout();
+  if (d) vp.scrollTop = lineTopY(topLine, d);
   render();
 }
 
@@ -57,6 +246,10 @@ export function updateEditorOptionControls() {
 
 let raf = 0;
 let renderedFirst = 0;
+let lastPaintKey = '';
+export function invalidatePaint() {
+  lastPaintKey = '';
+}
 export function render() {
   if (raf) return;
   raf = requestAnimationFrame(() => { raf = 0; paint(); });
@@ -65,16 +258,56 @@ export function render() {
 export function paint() {
   const d = doc_();
   if (!d) { const c = $('#caret'); if (c) c.hidden = true; return; }
+  const lh = getLH();
   const top = vp.scrollTop;
-  const first = Math.max(0, Math.floor(top / LH) - OVERSCAN);
-  const count = Math.ceil(vp.clientHeight / LH) + OVERSCAN * 2;
-  const last = Math.min(d.total, first + count);
-  renderedFirst = first;
+  let first, last, anchorLine = 0, w = null;
+  if (S.wrap && d.total > 0) {
+    w = ensureWrapMap(d);
+    anchorLine = lineIndexAtY(w, d.total, top);
+    const overscanPx = OVERSCAN * lh;
+    const minY = Math.max(0, top - overscanPx);
+    const maxY = top + (vp.clientHeight || 600) + overscanPx;
+    first = lineIndexAtY(w, d.total, minY);
+    if (first === anchorLine && first > 0) first--;
+    last = Math.min(d.total, lineIndexAtY(w, d.total, maxY) + 2);
+    if (last <= first) last = Math.min(d.total, first + 1);
+  } else {
+    first = Math.max(0, Math.floor(top / lh) - OVERSCAN);
+    const count = Math.ceil((vp.clientHeight || 600) / lh) + OVERSCAN * 2;
+    last = Math.min(d.total, first + count);
+  }
   ensureChunks(d, first, last);
 
-  let html = '';
   const gut = d.gutter || null;
   const agentRanges = (S.agentTargets || []).filter(t => t.path === d.path);
+  const agentKey = agentRanges.map(r => r.l1 + ':' + r.l2).join(',');
+  const findKey = S.find && S.find.hits.length ? S.find.q + ':' + S.find.cs + ':' + S.find.active + ':' + S.find.hits.length : '';
+  const linkKey = S.link ? S.link.line + ':' + S.link.col + ':' + S.link.word : '';
+  const gutKey = gut ? gut.marks.size + ':' + gut.dels.size : '';
+  const diagList = Array.isArray(d.diagnostics) ? d.diagnostics : [];
+  const diagKey = diagList.length ? diagList.length + ':' + diagList[0].line + ':' + diagList[0].message : '';
+  const paintKey = [
+    d.path, d.gen || 0, first, last, d.cur, S.occ || '',
+    findKey, linkKey, gutKey, diagKey, agentKey, S.selAll === d ? 1 : 0, S.wrap ? 1 : 0
+  ].join('|');
+
+  if (paintKey === lastPaintKey && rowsEl.children.length === Math.max(0, last - first)) {
+    const y0 = w ? w.offsets[first] : first * lh;
+    rowsEl.style.transform = 'translateY(' + y0 + 'px)';
+    placeCaret();
+    return;
+  }
+  lastPaintKey = paintKey;
+  renderedFirst = first;
+
+  const diagByLine = new Map();
+  for (const dg of diagList) {
+    if (!dg || !dg.line) continue;
+    const prev = diagByLine.get(dg.line);
+    if (!prev || (dg.severity || 1) < (prev.severity || 1)) diagByLine.set(dg.line, dg);
+  }
+
+  let html = '';
   for (let i = first; i < last; i++) {
     const n = i + 1;
     const body = d.lines[i];
@@ -87,14 +320,57 @@ export function paint() {
       if (m) gc += m === 'add' ? ' gut-add' : ' gut-mod';
       if (gut.dels.has(n)) rc += ' gut-del';
     }
+    const dg = diagByLine.get(n);
+    let cAttr = '';
+    if (dg) {
+      const isErr = (dg.severity || 1) === 1;
+      rc += isErr ? ' row-has-err' : ' row-has-warn';
+      gc += isErr ? ' gut-diag-err' : ' gut-diag-warn';
+      const label = '  — ' + (dg.source ? dg.source + ': ' : '') + (dg.message || '').split('\n')[0];
+      cAttr = ' data-diag="' + esc(label) + '" title="' + esc(dg.message || '') + '"';
+    }
     html += '<div class="' + rc + '" data-l="' + n + '">' +
-      '<div class="' + gc + '"><span class="line-btn" role="button" data-l="' + n + '" title="Thread and line actions">Edit</span>' + n + '</div><div class="c">' + (body === undefined ? '' : body) + '</div></div>';
+      '<div class="' + gc + '"><span class="line-btn" role="button" data-l="' + n + '" title="Thread and line actions">Edit</span>' + n + '</div><div class="c"' + cAttr + '>' + (body === undefined ? '' : body) + '</div></div>';
   }
   const sel = saveSelection();
-  rowsEl.style.transform = 'translateY(' + (first * LH) + 'px)';
+  const y0 = w ? w.offsets[first] : first * lh;
+  rowsEl.style.transform = 'translateY(' + y0 + 'px)';
   rowsEl.innerHTML = html;
   rowsEl.classList.toggle('all', S.selAll === d);
   decorate(first, last);
+  if (w && vp.clientWidth > 0) {
+    let changed = false;
+    let deltaAbove = 0;
+    const children = rowsEl.children;
+    for (let k = 0; k < children.length; k++) {
+      const idx = first + k;
+      if (idx >= d.total) break;
+      if (d.lines[idx] === undefined) continue;
+      const actualH = /** @type {HTMLElement} */ (children[k]).offsetHeight;
+      if (actualH > 0) {
+        w.measured[idx] = 1;
+        const oldH = w.heights[idx];
+        if (actualH !== oldH) {
+          w.heights[idx] = actualH;
+          changed = true;
+          if (idx < anchorLine) {
+            deltaAbove += actualH - oldH;
+          }
+        }
+      }
+    }
+    if (changed) {
+      recomputeOffsets(w, d.total);
+      sizer.style.height = (w.offsets[d.total] + bottomPad()) + 'px';
+      if (deltaAbove !== 0 && top > 0) {
+        vp.scrollTop = Math.max(0, top + deltaAbove);
+      }
+    }
+  } else if (!S.wrap && vp.clientWidth > 0 && rowsEl.scrollWidth > sizer.offsetWidth) {
+    const sw = rowsEl.scrollWidth;
+    sizer.style.width = sw + 'px';
+    rowsEl.style.width = sw + 'px';
+  }
   if (sel) restoreSelection(sel);
   placeCaret();
 }
@@ -123,8 +399,9 @@ export function placeCaret() {
     r.collapse(true);
     const rect = r.getClientRects()[0] || r.getBoundingClientRect();
     x = rect.left;
+    const lh = getLH();
     // Wrapped rows are taller than one line; otherwise pin to the row's top.
-    y = S.wrap ? rect.top - (LH - rect.height) / 2 : row.getBoundingClientRect().top;
+    y = S.wrap ? rect.top - (lh - rect.height) / 2 : row.getBoundingClientRect().top;
   } else {
     const cr = code.getBoundingClientRect();
     x = cr.left + parseFloat(getComputedStyle(code).paddingLeft || '0');
@@ -314,13 +591,17 @@ export function ensureChunks(d, first, last) {
   for (let c = c0; c <= c1; c++) {
     if (d.chunks.has(c) || d.pending.has(c)) continue;
     d.pending.add(c);
-    const gen = d.gen;
+    const reqGen = d.reqGen || 0;
     api('/api/file', { path: d.path, start: c * CHUNK, count: CHUNK })
       .then(j => {
-        if (gen !== d.gen) return; // superseded by a background highlight swap
+        if (reqGen !== (d.reqGen || 0)) return; // superseded by a reload
         for (let i = 0; i < j.lines.length; i++) d.lines[j.start + i] = j.lines[i];
+        if (Array.isArray(j.diagnostics)) d.diagnostics = j.diagnostics;
+        d.gen = (d.gen || 0) + 1;
         d.chunks.add(c); d.pending.delete(c);
-        if (doc_() === d) render();
+        d._colsChunks?.delete(c);
+        d._wrap?.chunkEst?.delete(c);
+        if (doc_() === d) { layout(); render(); }
         if (j.refine) refineChunk(d, c);
       })
       .catch(() => d.pending.delete(c));
@@ -346,6 +627,12 @@ export function refineChunk(d, c, delay = 800, tries = 0) {
     let changed = false;
     for (let i = 0; i < j.lines.length; i++) {
       if (d.lines[j.start + i] !== j.lines[i]) { d.lines[j.start + i] = j.lines[i]; changed = true; }
+    }
+    if (Array.isArray(j.diagnostics)) d.diagnostics = j.diagnostics;
+    if (changed) {
+      d.gen = (d.gen || 0) + 1;
+      d._colsChunks?.delete(c);
+      d._wrap?.chunkEst?.delete(c);
     }
     if (changed && doc_() === d) render();
   }, delay);

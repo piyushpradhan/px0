@@ -181,4 +181,73 @@ func TestTelemetryDisabledWithoutKey(t *testing.T) {
 	}
 	tel.Track("session_started", nil)
 	tel.Close("normal")
+	// Double close is safe
+	tel.Close("normal")
 }
+
+func TestGetOrGenerateDistinctID(t *testing.T) {
+	tempHome := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", origHome)
+
+	// First call generates new ID and saves to tempHome/.px0/anonymous_id
+	id1 := getOrGenerateDistinctID()
+	if len(id1) < 16 {
+		t.Fatalf("expected >= 16 byte id, got %q", id1)
+	}
+
+	// Second call reads it back
+	id2 := getOrGenerateDistinctID()
+	if id1 != id2 {
+		t.Errorf("expected cached id %q, got %q", id1, id2)
+	}
+
+	// Corrupt file (too short) -> regenerates
+	idPath := tempHome + "/.px0/anonymous_id"
+	_ = os.WriteFile(idPath, []byte("short"), 0644)
+	id3 := getOrGenerateDistinctID()
+	if id3 == "short" || len(id3) < 16 {
+		t.Errorf("expected regenerated id, got %q", id3)
+	}
+
+	// UUID generator
+	u := generateUUID()
+	if len(u) != 36 {
+		t.Errorf("expected 36 char UUID, got %q", u)
+	}
+}
+
+func TestTelemetryServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	os.Setenv("PX0_POSTHOG_KEY", "phc_test_err_key")
+	os.Setenv("PX0_POSTHOG_HOST", server.URL)
+	defer os.Unsetenv("PX0_POSTHOG_KEY")
+	defer os.Unsetenv("PX0_POSTHOG_HOST")
+
+	tel := New("", "0.1.0", false)
+	tel.Track("test_event", nil)
+	tel.Close("error_test")
+}
+
+func BenchmarkFilesBucket(b *testing.B) {
+	counts := []int{10, 250, 1500, 5000, 25000, 75000, 200000}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = FilesBucket(counts[i%len(counts)])
+	}
+}
+
+func BenchmarkTelemetryTrackDisabled(b *testing.B) {
+	tel := New("", "0.1.0", false)
+	props := map[string]any{"count": 42}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tel.Track("action", props)
+	}
+}
+

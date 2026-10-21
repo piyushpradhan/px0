@@ -478,9 +478,12 @@ async function rewriteWithAI() {
 
 // First line is the commit title; the rest, past the blank line, its body.
 function splitMessage(text) {
-  let t = text.trim();
-  const fence = t.match(/^```[a-z]*\n([\s\S]*?)\n```$/);
+  let t = (text || '').trim();
+  const fence = t.match(/```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n```/) || t.match(/^```([\s\S]*?)```$/);
   if (fence) t = fence[1].trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    t = t.slice(1, -1).trim();
+  }
   const [title, ...rest] = t.split('\n');
   return { title: (title || '').trim(), message: rest.join('\n').trim() };
 }

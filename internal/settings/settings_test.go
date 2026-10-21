@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -200,3 +201,53 @@ func TestSettingsBasePath(t *testing.T) {
 		t.Errorf("expected ServerBasePath /rev-456/ from fallback, got %v", s.ServerBasePath)
 	}
 }
+
+func TestSettingsRawJSON(t *testing.T) {
+	isolateSettings(t)
+
+	// Initial raw JSON should be empty object
+	initial := ReadRawJSON()
+	if initial == "" {
+		t.Error("expected non-empty initial raw JSON")
+	}
+
+	// Save valid JSON
+	raw := []byte(`{"editor.fontSize": 15.0, "agent": "claude-code"}`)
+	if err := SaveRawJSON(raw); err != nil {
+		t.Fatalf("SaveRawJSON failed: %v", err)
+	}
+
+	readBack := ReadRawJSON()
+	if !strings.Contains(readBack, "editor.fontSize") || !strings.Contains(readBack, "15") {
+		t.Errorf("expected saved settings in ReadRawJSON, got: %s", readBack)
+	}
+
+	// Invalid JSON should return error
+	if err := SaveRawJSON([]byte(`{not valid json}`)); err == nil {
+		t.Error("expected error saving invalid JSON")
+	}
+}
+
+func BenchmarkSettingsReadMergedMap(b *testing.B) {
+	isolateSettingsBenchmark(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ReadMergedMap()
+	}
+}
+
+func BenchmarkSettingsUpdateMap(b *testing.B) {
+	isolateSettingsBenchmark(b)
+	update := map[string]any{"editor.fontSize": 14.0}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = UpdateMap(update)
+	}
+}
+
+func isolateSettingsBenchmark(b *testing.B) {
+	b.Helper()
+	dir := b.TempDir()
+	b.Setenv("XDG_CONFIG_HOME", dir)
+}
+

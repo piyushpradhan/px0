@@ -1,7 +1,7 @@
 // web/src/cursor.js
 import { $, S, doc_, MOD, LH } from './state.js';
 import { vp, rowsEl } from './ui.js';
-import { paint, render, rowFor, placeCaret, toPoint } from './renderer.js';
+import { paint, render, rowFor, placeCaret, toPoint, getLH, lineTopY, lineHeightAt } from './renderer.js';
 import { updateStatus } from './status.js';
 import { gotoDefinition } from './lsp.js';
 import { pushHistory } from './history.js';
@@ -210,9 +210,11 @@ export function moveCursor(delta, shift = false) {
   else d.selAnchor = null;
 
   d.cur = Math.max(1, Math.min(d.total, d.cur + delta));
-  const y = (d.cur - 1) * LH;
-  if (y < vp.scrollTop) vp.scrollTop = y - LH;
-  else if (y > vp.scrollTop + vp.clientHeight - LH * 2) vp.scrollTop = y - vp.clientHeight + LH * 3;
+  const lh = getLH();
+  const y = lineTopY(d.cur, d);
+  const h = Math.min(lineHeightAt(d.cur, d), Math.max(lh, vp.clientHeight * 0.5));
+  if (y < vp.scrollTop) vp.scrollTop = Math.max(0, y - lh);
+  else if (y + h > vp.scrollTop + vp.clientHeight - lh) vp.scrollTop = y - vp.clientHeight + h + lh * 2;
   render(); updateStatus();
   updateDomSelection();
 }

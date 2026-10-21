@@ -2,7 +2,7 @@
 import { $, esc, S, doc_, api, apiPost, LH, CHUNK, withKeys } from './state.js';
 import { emit } from './bus.js';
 import { vp, sizer, rowsEl, editor } from './ui.js';
-import { render, layout, refineChunk } from './renderer.js';
+import { render, layout, refineChunk, getLH, lineTopY } from './renderer.js';
 import { updateStatus, setStatusNote, refreshMetrics } from './status.js';
 import { pushHistory } from './history.js';
 import { warmLSP } from './lsp.js';
@@ -15,7 +15,7 @@ import { clearSelectAll } from './selbar.js';
 import { syncPreview, previewing, previewLine } from './markdown.js';
 import { syncDiffView, layoutPref, diffScrollTop, setDiffMode, setSourceJumpHandler, setCommitStepHandler, scrollDiffToLine } from './diff.js';
 import { syncImageView } from './imageview.js';
-import { syncEditUI, editTextarea, updateGutter } from './editview.js';
+import { syncEditUI, editTextarea, updateGutter, centerEditLine } from './editview.js';
 
 // Recently closed files, newest last, for Alt+Shift+T.
 const closedTabs = [];
@@ -74,25 +74,32 @@ function openTabMenu(index, x, y) {
    puts the tab back on the working tree, which is what "open this file" means
    everywhere else in px0. */
 export async function openFile(path, opts = {}) {
-  const { line, push = true, col, view, soft = false, ref = '' } = opts;
+  const { line, push = true, col, view, soft = false, ref = '', base = '', turnFiles = null, turnLabel = '' } = opts;
   const prev = doc_();
   const wantsDiff = view === 'diff';
   const wantsSource = view === 'source';
 
   let idx = S.tabs.findIndex(t => t.path === path);
-  if (idx >= 0 && (S.tabs[idx].diffRef || '') !== ref) {
+  if (idx >= 0 && ((S.tabs[idx].diffRef || '') !== ref || (S.tabs[idx].diffBase || '') !== base)) {
     /* Same tab, different revision. Drop the cached diff and let loadGutter
        re-decide: the file may have a diff at the commit and none in the
        working tree, or the other way round, so neither diffAvailable nor
        diffMode survives the switch. */
     const t = S.tabs[idx];
     t.diffRef = ref;
+    t.diffBase = base;
+    t.turnFiles = turnFiles;
+    t.turnLabel = turnLabel;
     t.diffText = undefined;
     t.diffHunks = undefined;
     t.diffDismissed = false;
     t.diffMode = null;
     t.openedInDiffView = true;
     await loadGutter(t);
+    if (base) t.diffAvailable = true;
+  } else if (idx >= 0 && (turnFiles !== null || turnLabel !== '')) {
+    S.tabs[idx].turnFiles = turnFiles;
+    S.tabs[idx].turnLabel = turnLabel;
   }
   if (idx < 0) {
     let j;
@@ -104,7 +111,7 @@ export async function openFile(path, opts = {}) {
       return;
     }
     const isImg = !!j.image;
-    const hasDiff = !isImg && !!j.diffAvailable;
+    const hasDiff = !isImg && (!!j.diffAvailable || !!base);
 
     let initialDiffMode = null;
     let initialOpenedInDiff = false;
@@ -132,11 +139,15 @@ export async function openFile(path, opts = {}) {
       outline: null, gen: 0, markdown: !isImg && !!j.markdown, table: !isImg && !!j.table, isImage: isImg,
       deleted: !isImg && !!j.deleted,
       gutter: null,
+      diagnostics: (!isImg && j.diagnostics) || [],
       diffMode: initialDiffMode,
       diffAvailable: hasDiff,
       diffDismissed: initialDismissed,
       openedInDiffView: initialOpenedInDiff,
       diffRef: ref,
+      diffBase: base,
+      turnFiles,
+      turnLabel,
     };
     if (!isImg) {
       for (let i = 0; i < j.lines.length; i++) d.lines[j.start + i] = j.lines[i];
@@ -189,14 +200,14 @@ export async function openFile(path, opts = {}) {
   warmLSP(d);
   drawTabs(); drawCrumbs(); layout();
 
+  syncEditUI();
   if (line) {
     d.cur = line;
     if (d.diffMode) scrollDiffToLine(line);
     else centerLine(line);
-  } else if (!d.diffMode) {
+  } else if (!d.diffMode && !d.isEditing) {
     vp.scrollTop = d.scrollTop;
   }
-  syncEditUI();
   render();
   updateStatus();
   if ($('#panel-outline')?.classList.contains('active')) loadOutline();
@@ -291,8 +302,17 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
     }
 
     const keep = tgt.oldDoc;
-    const hasDiff = !!j.diffAvailable;
-    if (onlyIfChanged && keep.size === j.size && keep.total === j.total &&
+    const hasDiff = !!j.diffAvailable || !!keep.diffBase;
+    let linesSame = true;
+    if (keep.lines && j.lines) {
+      for (let k = 0; k < j.lines.length; k++) {
+        if (keep.lines[tgt.start + k] !== j.lines[k]) { linesSame = false; break; }
+      }
+    }
+    const diagCount = (j.diagnostics || []).length;
+    const keepDiagCount = (keep.diagnostics || []).length;
+    if (onlyIfChanged && linesSame && diagCount === keepDiagCount &&
+        keep.size === j.size && keep.total === j.total &&
         !!keep.diffAvailable === hasDiff && !!keep.deleted === !!j.deleted) continue;
     anyChanged = true;
     const newCur = Math.max(1, Math.min(keep.cur || 1, j.total || 1));
@@ -324,6 +344,7 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
       mdScroll: keep.mdScroll || 0,
       mdLine: keep.mdLine || 0,
       gutter: null,
+      diagnostics: j.diagnostics || [],
       diffMode,
       diffAvailable: hasDiff,
       diffDismissed: !!keep.diffDismissed || (!keep.diffMode && !j.deleted),
@@ -332,6 +353,9 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
       prCollapsed: keep.prCollapsed,
       youCollapsed: keep.youCollapsed,
       diffRef: tgt.ref,
+      diffBase: keep.diffBase || '',
+      turnFiles: keep.turnFiles || null,
+      turnLabel: keep.turnLabel || '',
       isEditing: !!keep.isEditing,
       dirty: !!keep.dirty,
       editContent: keep.editContent,
@@ -373,8 +397,14 @@ export async function reloadOpenTabs({ onlyIfChanged = false } = {}) {
 }
 
 export function centerLine(n) {
+  const d = doc_();
+  if (d?.isEditing) {
+    centerEditLine(n);
+    return;
+  }
   if (previewing()) { previewLine(n); return; }
-  const y = (n - 1) * LH - Math.max(0, vp.clientHeight / 2 - LH * 2);
+  const lh = getLH();
+  const y = lineTopY(n) - Math.max(0, vp.clientHeight / 2 - lh * 2);
   vp.scrollTop = Math.max(0, y);
 }
 
@@ -430,6 +460,9 @@ function closeTabs(indices) {
     }
     // Release large arrays to assist garbage collection
     closed.lines = null;
+    closed._wrap = null;
+    closed._lineCols = null;
+    closed._colsChunks?.clear?.();
     closed.chunks?.clear?.();
     closed.pending?.clear?.();
     closed.refining?.clear?.();
@@ -489,10 +522,13 @@ export async function reopenClosedTab() {
 // commit and close the one stepped away from, so stepping swaps a tab in place
 // rather than leaving one open per file.
 async function stepCommitFile(from, file) {
-  const ref = from.diffRef;
-  await openFile(file.path, { ref, view: 'diff' });
+  const ref = from.diffRef || '';
+  const base = from.diffBase || '';
+  const turnFiles = from.turnFiles || null;
+  const turnLabel = from.turnLabel || '';
+  await openFile(file.path, { ref, base, turnFiles, turnLabel, view: 'diff' });
   const i = S.tabs.indexOf(from);
-  if (i >= 0 && from !== doc_() && from.diffRef === ref) closeTab(i);
+  if (i >= 0 && from !== doc_() && (from.diffRef || '') === ref) closeTab(i);
 }
 
 export function drawTabs() {

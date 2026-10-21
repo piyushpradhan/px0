@@ -4,8 +4,9 @@
 // side-by-side split layout (default) or a single-column unified layout.
 // Unlike the code viewport this is not virtualized -- a file's own diff is
 // bounded in size, so a plain DOM render is simple and fast enough.
-import { $, S, doc_, esc, api, MOD } from './state.js';
+import { $, $$, S, doc_, esc, api, apiPostJson, MOD } from './state.js';
 import { on } from './bus.js';
+import { showToast } from './ui.js';
 import { syncPreview } from './markdown.js';
 import { setStatusNote, updateStatus } from './status.js';
 import { wordAtPoint } from './cursor.js';
@@ -68,14 +69,20 @@ export async function toggleDiff() {
   if (!S.meta?.git) return;
   const d = doc_();
   if (!d) return;
-  if (!d.diffMode && !d.diffAvailable) { setStatusNote('No diff — clean file or not a git repo', 4000); return; }
+  if (!d.diffMode && !d.diffAvailable) {
+    setStatusNote(S.meta?.git ? 'No diff — clean or untracked file' : 'No diff — clean file or not a git repo', 4000);
+    return;
+  }
   setDiffMode(d.diffMode ? 'source' : (layoutPref() || 'split'));
 }
 
 export async function setDiffMode(mode) {
   const d = doc_();
   if (!d) return;
-  if (mode !== 'source' && !d.diffAvailable) { setStatusNote('No diff — clean file or not a git repo', 4000); return; }
+  if (mode !== 'source' && !d.diffAvailable) {
+    setStatusNote(S.meta?.git ? 'No diff — clean or untracked file' : 'No diff — clean file or not a git repo', 4000);
+    return;
+  }
   if (mode === 'source') {
     d.diffMode = null;
     d.diffDismissed = true;
@@ -98,10 +105,11 @@ async function drawDiff(d, force = false) {
        without this its answer would land in a doc that has since been pointed
        somewhere else and show the wrong commit's diff. */
     const ref = d.diffRef || '';
+    const base = d.diffBase || '';
     try {
-      d.diffReq = api('/api/diff', { path: d.path, ref });
+      d.diffReq = api('/api/diff', { path: d.path, ref, base });
       const j = await d.diffReq;
-      if ((d.diffRef || '') !== ref) return;
+      if ((d.diffRef || '') !== ref || (d.diffBase || '') !== base) return;
       d.diffText = j.diff || '';
       d.diffHunks = j.hunks || parseDiff(d.diffText);
       // In a PR review session the server also splits the diff at the PR's
@@ -111,7 +119,7 @@ async function drawDiff(d, force = false) {
       d.prDiffHunks = j.prHunks !== undefined ? j.prHunks : (j.prDiff !== undefined ? parseDiff(j.prDiff) : undefined);
       d.yourDiffHunks = j.yourHunks !== undefined ? j.yourHunks : (j.yourDiff !== undefined ? parseDiff(j.yourDiff) : undefined);
     } catch (e) {
-      if ((d.diffRef || '') !== ref) return;
+      if ((d.diffRef || '') !== ref || (d.diffBase || '') !== base) return;
       d.diffText = '';
       d.diffHunks = [];
       d.prDiffHunks = undefined;
@@ -143,9 +151,10 @@ export function scrollDiffToLine(line) {
   }
 }
 
-function appendHunks(frag, hunks, mode, reviewable) {
-  for (const hunk of hunks) {
-    frag.append(hunkHeader(hunk));
+function appendHunks(frag, hunks, mode, reviewable, canActOnHunk = false) {
+  for (let idx = 0; idx < hunks.length; idx++) {
+    const hunk = hunks[idx];
+    frag.append(hunkHeader(hunk, idx, canActOnHunk));
     frag.append(mode === 'unified' ? unifiedTable(hunk, reviewable) : splitTable(hunk, reviewable));
   }
 }
@@ -154,25 +163,28 @@ function renderDiff(d) {
   diffContent.replaceChildren();
   const frag = document.createDocumentFragment();
   if (d.diffRef) {
-    /* Pinned to one commit by the Unpushed sidebar section. Its line numbers
-       are that commit's, not the working tree's, so nothing here is a review
-       target (reviewable=false) -- see anchor() below. */
+    /* Pinned to one commit by the Unpushed sidebar section, or a thread turn
+       snapshot range (diffBase..diffRef). */
     const hunks = d.diffHunks || [];
     if (!hunks.length) {
       const p = document.createElement('div');
       p.className = 'diff-empty';
-      p.textContent = 'This commit made no change to ' + d.name + '.';
+      p.textContent = (d.turnLabel ? d.turnLabel : 'This commit') + ' made no change to ' + d.name + '.';
       diffContent.append(p);
       return;
     }
-    frag.append(commitStrip(d));
-    frag.append(createDiffSection(d, 'commit', 'In commit ' + d.diffRef.slice(0, 7),
-      'this commit only, not the working tree', (bodyEl) => appendHunks(bodyEl, hunks, d.diffMode, false)));
+    frag.append(d.turnFiles ? reviewStrip(d) : commitStrip(d));
+    const title = d.turnLabel ? d.turnLabel : ('In commit ' + d.diffRef.slice(0, 7));
+    const sub = d.turnLabel ? 'snapshot diff for this agent turn' : 'this commit only, not the working tree';
+    frag.append(createDiffSection(d, 'commit', title, sub,
+      (bodyEl) => appendHunks(bodyEl, hunks, d.diffMode, false, false)));
     diffContent.append(frag);
     syncDiffAgentTargets();
     if (prSyncHandler) prSyncHandler();
     return;
   }
+  const strip = reviewStrip(d);
+  if (strip) frag.append(strip);
   if (S.meta?.pr && d.prDiffHunks !== undefined) {
     const prHunks = d.prDiffHunks || [];
     const yourHunks = d.yourDiffHunks || [];
@@ -195,13 +207,13 @@ function renderDiff(d) {
     }
     frag.append(createDiffSection(d, 'pr', 'PR changes', 'from ' + (S.meta.pr.base || 'base'), (body) => {
       if (!prHunks.length) body.append(sectionNote('The PR itself makes no change to this file.'));
-      else appendHunks(body, prHunks, d.diffMode, true);
+      else appendHunks(body, prHunks, d.diffMode, true, false);
     }));
 
     const since = S.meta.pr.headSHA ? 'since ' + S.meta.pr.headSHA.slice(0, 7) : 'since checkout';
     frag.append(createDiffSection(d, 'you', 'Your changes', since, (body) => {
       if (!yourHunks.length) body.append(sectionNote('Nothing edited or committed yet — changes you make will show up here.'));
-      else appendHunks(body, yourHunks, d.diffMode, false);
+      else appendHunks(body, yourHunks, d.diffMode, false, true);
     }));
   } else {
     if (!d.diffHunks || !d.diffHunks.length) {
@@ -211,7 +223,7 @@ function renderDiff(d) {
       diffContent.append(p);
       return;
     }
-    appendHunks(frag, d.diffHunks, d.diffMode, true);
+    appendHunks(frag, d.diffHunks, d.diffMode, true, true);
   }
   diffContent.append(frag);
   syncDiffAgentTargets();
@@ -365,11 +377,259 @@ export function syncDiffAgentTargets() {
   }
 }
 
-function hunkHeader(hunk) {
+/* ---------- code review state: viewed files, hunk/file stepping, hunk actions ---------- */
+
+const viewedFiles = new Set();
+
+export function isFileViewed(path) {
+  return viewedFiles.has(path);
+}
+
+export function toggleFileViewed(path) {
+  if (!path) return false;
+  if (viewedFiles.has(path)) viewedFiles.delete(path);
+  else viewedFiles.add(path);
+  const viewed = viewedFiles.has(path);
+  for (const ti of $$('#tree .ti[data-path]')) {
+    if (ti.dataset.path === path) ti.classList.toggle('file-viewed', viewed);
+  }
+  return viewed;
+}
+
+function currentChangedFiles(d = doc_()) {
+  if (d?.turnFiles?.length) {
+    return d.turnFiles.map(p => (typeof p === 'string' ? { path: p, status: 'M' } : p));
+  }
+  if (d?.diffRef) {
+    return cachedCommitFiles(d.diffRef) || [];
+  }
+  const list = [];
+  const seen = new Set();
+  for (const el of $$('#tree .ti[data-git]:not([data-dir="1"])')) {
+    const p = el.dataset.path;
+    if (p && !seen.has(p)) {
+      seen.add(p);
+      list.push({ path: p, status: el.dataset.git || 'M' });
+    }
+  }
+  if (d?.path && d.diffAvailable && !seen.has(d.path)) {
+    list.push({ path: d.path, status: 'M' });
+  }
+  return list;
+}
+
+function reviewStrip(d) {
+  const files = currentChangedFiles(d);
+  const i = files.findIndex(f => f.path === d.path);
+  const el = document.createElement('div');
+  el.className = 'diff-commit-strip diff-review-strip';
+  const viewed = isFileViewed(d.path);
+  const posHtml = files.length > 0 && i >= 0
+    ? '<span class="dcs-pos">' + (i + 1) + ' / ' + files.length + '</span>' +
+      '<button type="button" class="dcs-step" data-review-step="-1" title="Previous changed file ([f)"' + (i <= 0 ? ' disabled' : '') + '>‹</button>' +
+      '<button type="button" class="dcs-step" data-review-step="1" title="Next changed file (]f)"' + (i >= files.length - 1 ? ' disabled' : '') + '>›</button>'
+    : '';
+  el.innerHTML =
+    (d.turnLabel ? '<span class="gs git-M">' + esc(d.turnLabel) + '</span>' : '') +
+    '<span class="dcs-path" title="' + esc(d.path) + '">' + esc(d.path) + '</span>' +
+    '<span class="grow"></span>' +
+    '<button type="button" class="dcs-step dcs-hunk-btn" data-hunk-step="-1" title="Previous diff hunk ([c)">↑ Hunk</button>' +
+    '<button type="button" class="dcs-step dcs-hunk-btn" data-hunk-step="1" title="Next diff hunk (]c)">↓ Hunk</button>' +
+    '<button type="button" class="dcs-viewed' + (viewed ? ' active' : '') + '" data-toggle-viewed="1" title="Mark file as viewed and advance to next unviewed file">✓ Viewed</button>' +
+    posHtml;
+  return el;
+}
+
+export function stepChangedFile(dir = 1) {
+  const d = doc_();
+  if (!d) return;
+  if (d.diffRef && !d.turnFiles) {
+    const files = cachedCommitFiles(d.diffRef);
+    if (!files) return;
+    const i = files.findIndex(f => f.path === d.path);
+    const nextIdx = commitStepTarget(files, i, dir);
+    if (nextIdx >= 0 && commitStepHandler) commitStepHandler(d, files[nextIdx]);
+    return;
+  }
+  const files = currentChangedFiles(d);
+  if (!files.length) return;
+  const i = files.findIndex(f => f.path === d.path);
+  const nextIdx = i < 0 ? 0 : i + dir;
+  if (nextIdx >= 0 && nextIdx < files.length && commitStepHandler) {
+    commitStepHandler(d, files[nextIdx]);
+  }
+}
+
+export function stepDiffHunk(dir = 1) {
+  if (!diffview || diffview.hidden) return;
+  const heads = [...diffview.querySelectorAll('.diff-hunk-head')];
+  if (!heads.length) return;
+  const viewTop = diffview.getBoundingClientRect().top;
+  const threshold = 24;
+  let target = null;
+  if (dir > 0) {
+    target = heads.find(h => h.getBoundingClientRect().top - viewTop > threshold) || heads[0];
+  } else {
+    for (let i = heads.length - 1; i >= 0; i--) {
+      if (heads[i].getBoundingClientRect().top - viewTop < -threshold) {
+        target = heads[i];
+        break;
+      }
+    }
+    if (!target) target = heads[heads.length - 1];
+  }
+  if (target) {
+    target.scrollIntoView({ block: 'start', behavior: 'auto' });
+  }
+}
+
+function hunkHeader(hunk, idx = 0, canActOnHunk = false) {
   const el = document.createElement('div');
   el.className = 'diff-hunk-head';
-  el.textContent = '@@ -' + hunk.oldStart + ' +' + hunk.newStart + ' @@';
+  el._hunk = hunk;
+
+  const label = document.createElement('span');
+  label.className = 'diff-hunk-label';
+  label.textContent = '@@ -' + hunk.oldStart + ' +' + hunk.newStart + ' @@' + (hunk.section ? ' ' + hunk.section : '');
+  el.append(label);
+
+  const grow = document.createElement('span');
+  grow.className = 'grow';
+  el.append(grow);
+
+  const expandBtn = document.createElement('button');
+  expandBtn.type = 'button';
+  expandBtn.className = 'diff-hunk-btn diff-hunk-expand';
+  expandBtn.dataset.hunkExpand = String(idx);
+  expandBtn.title = 'Expand surrounding context lines';
+  expandBtn.textContent = '↕ Expand';
+  el.append(expandBtn);
+
+  if (canActOnHunk) {
+    for (const [act, text, title, extraCls] of [
+      ['stage', 'Stage', 'Stage this hunk (git apply --cached)', ''],
+      ['unstage', 'Unstage', 'Unstage this hunk (git apply --cached -R)', ''],
+      ['discard', 'Discard', 'Discard this hunk in working tree', ' diff-hunk-discard'],
+    ]) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'diff-hunk-btn' + extraCls;
+      btn.dataset.hunkAct = act;
+      btn.title = title;
+      btn.textContent = text;
+      el.append(btn);
+    }
+  }
   return el;
+}
+
+function serializeHunk(hunk) {
+  let oldCount = 0, newCount = 0;
+  let oldStart = hunk.oldStart || 1;
+  let newStart = hunk.newStart || 1;
+  let foundOld = false, foundNew = false;
+  const body = [];
+  for (const r of hunk.rows) {
+    if (!foundOld && r.oldLine !== undefined) { oldStart = r.oldLine; foundOld = true; }
+    if (!foundNew && r.newLine !== undefined) { newStart = r.newLine; foundNew = true; }
+    const text = r.text ?? '';
+    if (r.type === 'ctx') {
+      oldCount++; newCount++;
+      body.push(' ' + text);
+    } else if (r.type === 'del') {
+      oldCount++;
+      body.push('-' + text);
+    } else if (r.type === 'add') {
+      newCount++;
+      body.push('+' + text);
+    }
+  }
+  return `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@\n` + body.join('\n') + '\n';
+}
+
+async function applyHunkAction(d, hunk, action) {
+  if (!d || !hunk) return;
+  try {
+    await apiPostJson('/api/git/hunk', {
+      path: d.path,
+      hunk: serializeHunk(hunk),
+      action,
+    });
+    const labels = { stage: 'Staged hunk', unstage: 'Unstaged hunk', discard: 'Discarded hunk' };
+    showToast(labels[action] || 'Applied hunk', 'success', 2000);
+    d.diffScroll = diffview.scrollTop;
+    syncDiffView(true);
+  } catch (e) {
+    showToast('Hunk ' + action + ' failed: ' + e.message, 'error', 4000);
+  }
+}
+
+async function expandHunkContext(d, hunk) {
+  if (!d || !hunk || !hunk.rows?.length) return;
+  try {
+    if (!d.fullFileLines || !d.fullFileRaw) {
+      const j = await api('/api/file', { path: d.path, raw: '1', ref: d.diffRef || '' });
+      d.fullFileLines = j.lines || [];
+      d.fullFileRaw = j.raw || [];
+    }
+    const raw = d.fullFileRaw;
+    const html = d.fullFileLines;
+    if (!raw.length && !html.length) return;
+
+    const first = hunk.rows[0];
+    const last = hunk.rows[hunk.rows.length - 1];
+    let firstOld = first.oldLine ?? hunk.oldStart ?? 1;
+    let firstNew = first.newLine ?? first.at ?? hunk.newStart ?? 1;
+    let lastOld = last.oldLine ?? firstOld;
+    let lastNew = last.newLine ?? last.at ?? firstNew;
+    for (const r of hunk.rows) {
+      if (r.oldLine !== undefined) lastOld = r.oldLine;
+      if (r.newLine !== undefined) lastNew = r.newLine;
+    }
+
+    const step = 15;
+    const preCount = Math.min(step, Math.max(0, Math.min(firstOld - 1, firstNew - 1)));
+    const preRows = [];
+    for (let k = preCount; k >= 1; k--) {
+      const nl = firstNew - k;
+      const ol = firstOld - k;
+      preRows.push({
+        type: 'ctx',
+        oldLine: ol,
+        newLine: nl,
+        text: raw[nl - 1] ?? '',
+        html: html[nl - 1] ?? '',
+      });
+    }
+
+    const maxNew = Math.max(raw.length, html.length);
+    const postCount = Math.min(step, Math.max(0, maxNew - lastNew));
+    const postRows = [];
+    for (let k = 1; k <= postCount; k++) {
+      const nl = lastNew + k;
+      const ol = lastOld + k;
+      postRows.push({
+        type: 'ctx',
+        oldLine: ol,
+        newLine: nl,
+        text: raw[nl - 1] ?? '',
+        html: html[nl - 1] ?? '',
+      });
+    }
+
+    if (!preRows.length && !postRows.length) {
+      setStatusNote('Full file context already visible for this hunk', 2500);
+      return;
+    }
+    hunk.rows = [...preRows, ...hunk.rows, ...postRows];
+    hunk.oldStart = Math.max(1, firstOld - preCount);
+    hunk.newStart = Math.max(1, firstNew - preCount);
+    const savedScroll = diffview.scrollTop;
+    renderDiff(d);
+    diffview.scrollTop = savedScroll;
+  } catch (e) {
+    setStatusNote('Cannot expand context: ' + e.message, 3000);
+  }
 }
 
 /* ---------- unified diff parsing ---------- */
@@ -403,11 +663,26 @@ function parseDiff(text) {
   return hunks;
 }
 
+function buildDiagMap(d = doc_()) {
+  if (!d?.diagnostics?.length) return null;
+  const map = new Map();
+  for (const diag of d.diagnostics) {
+    if (!diag.line) continue;
+    const prefix = diag.severity === 1 ? '■ ' : '▲ ';
+    const prev = map.get(diag.line);
+    if (!prev || diag.severity === 1) {
+      map.set(diag.line, prefix + diag.message);
+    }
+  }
+  return map;
+}
+
 /* ---------- unified layout: one row per diff line ---------- */
 
 function unifiedTable(hunk, reviewable = true) {
   const table = document.createElement('div');
   table.className = 'diff-table diff-unified';
+  const diagMap = buildDiagMap();
 
   // Pair consecutive runs of deletions and additions to compute intra-line diffs
   const rowHtml = new Map();
@@ -419,7 +694,7 @@ function unifiedTable(hunk, reviewable = true) {
     while (i < hunk.rows.length && hunk.rows[i].type === 'add') adds.push(hunk.rows[i++]);
     const n = Math.min(dels.length, adds.length);
     for (let k = 0; k < n; k++) {
-      const diff = diffLine(dels[k].text, adds[k].text);
+      const diff = diffLine(dels[k].text, adds[k].text, dels[k].html, adds[k].html);
       rowHtml.set(dels[k], diff.oldHtml);
       rowHtml.set(adds[k], diff.newHtml);
     }
@@ -433,7 +708,7 @@ function unifiedTable(hunk, reviewable = true) {
       lineCell(row.type === 'add' ? '' : row.oldLine, reviewable),
       lineCell(row.type === 'del' ? '' : row.newLine, reviewable),
       markerCell(row.type),
-      codeCell(rowHtml.has(row) ? { ...row, html: rowHtml.get(row) } : row),
+      codeCell(rowHtml.has(row) ? { ...row, html: rowHtml.get(row) } : row, diagMap),
     );
     table.append(r);
   }
@@ -445,17 +720,18 @@ function unifiedTable(hunk, reviewable = true) {
 function splitTable(hunk, reviewable = true) {
   const table = document.createElement('div');
   table.className = 'diff-table diff-split';
+  const diagMap = buildDiagMap();
   for (const pair of pairRows(hunk.rows)) {
     let leftRow = pair.left;
     let rightRow = pair.right;
     if (leftRow && rightRow && leftRow.type === 'del' && rightRow.type === 'add') {
-      const diff = diffLine(leftRow.text, rightRow.text);
+      const diff = diffLine(leftRow.text, rightRow.text, leftRow.html, rightRow.html);
       leftRow = { ...leftRow, html: diff.oldHtml };
       rightRow = { ...rightRow, html: diff.newHtml };
     }
     const r = document.createElement('div');
     r.className = 'diff-row-pair';
-    r.append(splitSide(leftRow, 'left', reviewable), splitSide(rightRow, 'right', reviewable));
+    r.append(splitSide(leftRow, 'left', reviewable, diagMap), splitSide(rightRow, 'right', reviewable, diagMap));
     table.append(r);
   }
   return table;
@@ -479,13 +755,13 @@ function pairRows(rows) {
   return pairs;
 }
 
-function splitSide(row, side, reviewable = true) {
+function splitSide(row, side, reviewable = true, diagMap = null) {
   const el = document.createElement('div');
   el.className = 'diff-side diff-side-' + side + (row ? ' diff-' + row.type : ' diff-blank');
   if (!row) { el.append(lineCell('', reviewable), markerCell(''), codeCell(null)); return el; }
   const ln = side === 'left' ? row.oldLine : row.newLine;
   anchor(el, row, reviewable);
-  el.append(lineCell(ln, reviewable), markerCell(row.type), codeCell(row));
+  el.append(lineCell(ln, reviewable), markerCell(row.type), codeCell(row, side === 'right' ? diagMap : null));
   return el;
 }
 
@@ -532,7 +808,7 @@ function markerCell(type) {
   return el;
 }
 
-function codeCell(arg) {
+function codeCell(arg, diagMap = null) {
   const el = document.createElement('div');
   el.className = 'diff-code';
   if (!arg) {
@@ -542,6 +818,9 @@ function codeCell(arg) {
   if (typeof arg === 'string') {
     el.innerHTML = esc(arg) || '&nbsp;';
     return el;
+  }
+  if (diagMap && arg.newLine !== undefined && diagMap.has(arg.newLine)) {
+    el.dataset.diag = diagMap.get(arg.newLine);
   }
   el.innerHTML = arg.html || esc(arg.text || '') || '&nbsp;';
   return el;
@@ -613,23 +892,94 @@ function myersDiff(aTokens, bTokens) {
   return null;
 }
 
-// Computes an intra-line diff using token Myers algorithm with sub-character refinement.
-function diffLine(oldStr = '', newStr = '') {
-  if (oldStr === newStr) {
-    return { oldHtml: esc(oldStr), newHtml: esc(newStr) };
+// Overlays intra-line character change spans onto Chroma syntax-highlighted HTML
+// (`<i class=...>`) without breaking tag nesting.
+function overlayCharMask(syntaxHtml, expectedLen, mask, spanClass, bars, barClass) {
+  if (!syntaxHtml) return null;
+  let out = '';
+  let charIdx = 0;
+  let inSpan = false;
+  let i = 0;
+  const n = syntaxHtml.length;
+
+  while (i < n) {
+    if (syntaxHtml[i] === '<') {
+      const close = syntaxHtml.indexOf('>', i);
+      if (close < 0) return null;
+      if (inSpan) {
+        out += '</span>';
+        inSpan = false;
+      }
+      out += syntaxHtml.slice(i, close + 1);
+      i = close + 1;
+      continue;
+    }
+
+    if (bars && bars.has(charIdx)) {
+      if (inSpan) { out += '</span>'; inSpan = false; }
+      out += '<span class="' + barClass + '"></span>';
+    }
+
+    const wantSpan = charIdx < expectedLen && mask[charIdx] === 1;
+    if (wantSpan && !inSpan) {
+      out += '<span class="' + spanClass + '">';
+      inSpan = true;
+    } else if (!wantSpan && inSpan) {
+      out += '</span>';
+      inSpan = false;
+    }
+
+    if (syntaxHtml[i] === '&') {
+      const semi = syntaxHtml.indexOf(';', i);
+      if (semi > i && semi - i <= 10) {
+        out += syntaxHtml.slice(i, semi + 1);
+        i = semi + 1;
+        charIdx++;
+        continue;
+      }
+    }
+    out += syntaxHtml[i++];
+    charIdx++;
   }
+
+  if (inSpan) out += '</span>';
+  if (bars && bars.has(charIdx)) {
+    out += '<span class="' + barClass + '"></span>';
+  }
+  if (charIdx !== expectedLen) return null;
+  return out;
+}
+
+// Computes an intra-line diff using token Myers algorithm with sub-character refinement,
+// preserving Chroma syntax highlighting tokens (`oldSyntaxHtml`, `newSyntaxHtml`) when available.
+function diffLine(oldStr = '', newStr = '', oldSyntaxHtml = '', newSyntaxHtml = '') {
+  if (oldStr === newStr) {
+    return {
+      oldHtml: oldSyntaxHtml || esc(oldStr),
+      newHtml: newSyntaxHtml || esc(newStr),
+    };
+  }
+
+  const oldMask = new Uint8Array(oldStr.length);
+  const newMask = new Uint8Array(newStr.length);
+  const oldBars = new Set();
+  const newBars = new Set();
 
   const script = myersDiff(tokenize(oldStr), tokenize(newStr));
   if (!script) {
-    return diffLinePrefixSuffix(oldStr, newStr);
+    return diffLinePrefixSuffix(oldStr, newStr, oldSyntaxHtml, newSyntaxHtml);
   }
 
   let oldHtml = '', newHtml = '';
+  let oldPos = 0, newPos = 0;
   let i = 0;
   while (i < script.length) {
     if (script[i].type === 'eq') {
-      oldHtml += esc(script[i].val);
-      newHtml += esc(script[i].val);
+      const val = script[i].val;
+      oldHtml += esc(val);
+      newHtml += esc(val);
+      oldPos += val.length;
+      newPos += val.length;
       i++;
       continue;
     }
@@ -649,6 +999,11 @@ function diffLine(oldStr = '', newStr = '') {
       const dMid = dels.slice(start, delEnd + 1);
       const aMid = adds.slice(start, addEnd + 1);
 
+      for (let k = start; k <= delEnd; k++) oldMask[oldPos + k] = 1;
+      for (let k = start; k <= addEnd; k++) newMask[newPos + k] = 1;
+      if (!dMid && aMid) oldBars.add(oldPos + start);
+      if (!aMid && dMid) newBars.add(newPos + start);
+
       const dSpan = dMid
         ? '<span class="diff-char-del">' + esc(dMid) + '</span>'
         : (aMid ? '<span class="diff-char-bar-del"></span>' : '');
@@ -659,18 +1014,27 @@ function diffLine(oldStr = '', newStr = '') {
       oldHtml += esc(dels.slice(0, start)) + dSpan + esc(dels.slice(delEnd + 1));
       newHtml += esc(adds.slice(0, start)) + aSpan + esc(adds.slice(addEnd + 1));
     } else if (dels) {
+      for (let k = 0; k < dels.length; k++) oldMask[oldPos + k] = 1;
+      newBars.add(newPos);
       oldHtml += '<span class="diff-char-del">' + esc(dels) + '</span>';
       newHtml += '<span class="diff-char-bar-add"></span>';
     } else if (adds) {
+      for (let k = 0; k < adds.length; k++) newMask[newPos + k] = 1;
+      oldBars.add(oldPos);
       oldHtml += '<span class="diff-char-bar-del"></span>';
       newHtml += '<span class="diff-char-add">' + esc(adds) + '</span>';
     }
+    oldPos += dels.length;
+    newPos += adds.length;
   }
 
-  return { oldHtml, newHtml };
+  return {
+    oldHtml: overlayCharMask(oldSyntaxHtml, oldStr.length, oldMask, 'diff-char-del', oldBars, 'diff-char-bar-del') || oldHtml,
+    newHtml: overlayCharMask(newSyntaxHtml, newStr.length, newMask, 'diff-char-add', newBars, 'diff-char-bar-add') || newHtml,
+  };
 }
 
-function diffLinePrefixSuffix(oldStr, newStr) {
+function diffLinePrefixSuffix(oldStr, newStr, oldSyntaxHtml = '', newSyntaxHtml = '') {
   const oldLen = oldStr.length, newLen = newStr.length;
   let start = 0;
   while (start < oldLen && start < newLen && oldStr[start] === newStr[start]) start++;
@@ -680,15 +1044,27 @@ function diffLinePrefixSuffix(oldStr, newStr) {
   }
   const oldMid = oldStr.slice(start, oldEnd + 1);
   const newMid = newStr.slice(start, newEnd + 1);
+
+  const oldMask = new Uint8Array(oldLen);
+  const newMask = new Uint8Array(newLen);
+  const oldBars = new Set();
+  const newBars = new Set();
+  for (let k = start; k <= oldEnd; k++) oldMask[k] = 1;
+  for (let k = start; k <= newEnd; k++) newMask[k] = 1;
+  if (!oldMid && newMid) oldBars.add(start);
+  if (!newMid && oldMid) newBars.add(start);
+
   const dSpan = oldMid
     ? '<span class="diff-char-del">' + esc(oldMid) + '</span>'
     : (newMid ? '<span class="diff-char-bar-del"></span>' : '');
   const aSpan = newMid
     ? '<span class="diff-char-add">' + esc(newMid) + '</span>'
     : (oldMid ? '<span class="diff-char-bar-add"></span>' : '');
+  const plainOld = esc(oldStr.slice(0, start)) + dSpan + esc(oldStr.slice(oldEnd + 1));
+  const plainNew = esc(newStr.slice(0, start)) + aSpan + esc(newStr.slice(newEnd + 1));
   return {
-    oldHtml: esc(oldStr.slice(0, start)) + dSpan + esc(oldStr.slice(oldEnd + 1)),
-    newHtml: esc(newStr.slice(0, start)) + aSpan + esc(newStr.slice(newEnd + 1)),
+    oldHtml: overlayCharMask(oldSyntaxHtml, oldLen, oldMask, 'diff-char-del', oldBars, 'diff-char-bar-del') || plainOld,
+    newHtml: overlayCharMask(newSyntaxHtml, newLen, newMask, 'diff-char-add', newBars, 'diff-char-bar-add') || plainNew,
   };
 }
 
@@ -730,6 +1106,50 @@ export function initDiff() {
   // the diff shows what changed, but reading it usually means seeing it in
   // context, not just the hunk. Clicking a symbol highlights and opens hover actions.
   diffContent.addEventListener('click', e => {
+    const hunkActBtn = e.target.closest('[data-hunk-act]');
+    if (hunkActBtn) {
+      e.stopPropagation();
+      const head = hunkActBtn.closest('.diff-hunk-head');
+      const d = doc_();
+      if (head?._hunk && d) applyHunkAction(d, head._hunk, hunkActBtn.dataset.hunkAct);
+      return;
+    }
+    const expandBtn = e.target.closest('[data-hunk-expand]');
+    if (expandBtn) {
+      e.stopPropagation();
+      const head = expandBtn.closest('.diff-hunk-head');
+      const d = doc_();
+      if (head?._hunk && d) expandHunkContext(d, head._hunk);
+      return;
+    }
+    const hunkStepBtn = e.target.closest('[data-hunk-step]');
+    if (hunkStepBtn) {
+      e.stopPropagation();
+      stepDiffHunk(+hunkStepBtn.dataset.hunkStep);
+      return;
+    }
+    const viewedBtn = e.target.closest('[data-toggle-viewed]');
+    if (viewedBtn) {
+      e.stopPropagation();
+      const d = doc_();
+      if (!d) return;
+      const nowViewed = toggleFileViewed(d.path);
+      viewedBtn.classList.toggle('active', nowViewed);
+      if (nowViewed) {
+        const files = currentChangedFiles(d);
+        const curIdx = files.findIndex(f => f.path === d.path);
+        const nextUnviewed = files.slice(curIdx + 1).find(f => !isFileViewed(f.path)) ||
+                             files.slice(0, Math.max(0, curIdx)).find(f => !isFileViewed(f.path));
+        if (nextUnviewed && commitStepHandler) commitStepHandler(d, nextUnviewed);
+      }
+      return;
+    }
+    const reviewStep = e.target.closest('[data-review-step]');
+    if (reviewStep) {
+      e.stopPropagation();
+      if (!reviewStep.disabled) stepChangedFile(+reviewStep.dataset.reviewStep);
+      return;
+    }
     const step = e.target.closest('[data-commit-step]');
     if (step) {
       const d = doc_();

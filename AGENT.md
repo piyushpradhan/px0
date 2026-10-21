@@ -18,9 +18,38 @@ To keep iteration fast and avoid unnecessary delays:
 | **Build Binary** | `make build` | **~2s** | Bundles frontend (`web/app.js`) and compiles local `./px0` binary. |
 | **Fast Verification** | `make check` or `go test -short ./...` | **~7s** | Runs frontend validation, asset bundling, and fast Go unit tests. |
 | **Full Test Suite** | `make test` or `go test ./...` | **~20s** | Run once all changes are done; iterate until all tests pass before concluding. |
+| **Subsystem Verification** | `make verify` or `./scripts/test-bench.sh --fast` | **~15s** | Verifies 100% package test/benchmark coverage + statement coverage. |
+| **Full Verification & Bench**| `make verify-all` or `./scripts/test-bench.sh` | **~45s** | Comprehensive verification running all tests, coverage, and micro-benchmarks. |
 
 > [!TIP]
-> Isolated components in `internal/` can be tested in milliseconds without running the full test suite (e.g. `go test ./internal/table`, `go test ./internal/ignore`, `go test ./internal/fuzzy`, `go test ./internal/metrics`, `go test ./internal/render`, `go test ./internal/settings` take ~5–20ms).
+> Isolated components in `internal/` can be tested in milliseconds without running the full test suite (e.g. `go test ./internal/table`, `go test ./internal/ignore`, `go test ./internal/fuzzy`, `go test ./internal/metrics`, `go test ./internal/render`, `go test ./internal/settings`, `go test ./internal/symbols` take ~5–20ms).
+
+### Unified Test & Benchmark Verification Utility
+
+`px0` provides a unified script to run all unit tests, compute statement coverage across all packages, run all micro-benchmarks, and assert **100% package test and benchmark coverage**:
+
+```bash
+# Fast verification (recommended during development): runs tests (-short) and micro-benchmarks (-benchtime=100ms)
+./scripts/test-bench.sh --fast
+# or:
+make verify
+
+# Check test statement coverage per package without running benchmarks
+./scripts/test-bench.sh --test
+# or:
+make coverage
+
+# Enforce statement coverage threshold (e.g. 60%)
+./scripts/test-bench.sh --test --threshold 60
+
+# Run full benchmarks only
+./scripts/test-bench.sh --bench
+
+# Export machine-readable metrics to JSON
+./scripts/test-bench.sh --fast --json coverage-report.json
+```
+
+Whenever introducing a new Go package or subsystem, you must add both a `*_test.go` test suite and at least one micro-benchmark (`func Benchmark...`) in the package to maintain 100% package coverage. See [`docs/internals/testing-and-benchmarks.md`](docs/internals/testing-and-benchmarks.md) for full architectural documentation.
 
 ---
 
@@ -46,7 +75,7 @@ To keep iteration fast and avoid unnecessary delays:
 
 ## 3. Core Architectural Tenets
 
-1. **Reads First, Edits via Harness**: `px0` is an ultra-fast code reader and reviewer. File modifications are delegated to external coding harnesses (`agent.go`, `thread.go`), never authored directly to disk by `px0` (with the exception of explicit user-initiated Git operations in the sidebar).
+1. **Reads First, Edits via Harness**: `px0` is an ultra-fast code reader and reviewer. File modifications are delegated to external coding harnesses (`agent.go`), never authored directly to disk by `px0` (with the exception of explicit user-initiated Git operations in the sidebar).
 2. **Zero Runtime Dependencies**: The output must remain a single, standalone static binary. No CGO, no Node.js runtime requirement for the user, no external databases.
 3. **No Workspace Litter**: `px0` never creates `.px0/` folders or cache files inside a workspace tree. Persistent configuration and thread transcripts live in `$XDG_CONFIG_HOME/px0/` or `~/.px0/`; per-workspace session files (PR review drafts) and the workbench store live in `$XDG_STATE_HOME/px0/` or `~/.px0/`.
 4. **Fast & Non-Blocking**: Operations must remain responsive. All background tasks, network calls, and git operations must respect timeouts and set `GIT_TERMINAL_PROMPT=0`.

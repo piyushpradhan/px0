@@ -84,6 +84,7 @@ The internal documentation is modularized into the following focused guides:
 
 ### Operations & Maintenance
 
+- [Testing, Micro-Benchmarks & Subsystem Coverage](testing-and-benchmarks.md): Comprehensive testing philosophy, 100% package coverage guarantee, statement coverage metrics, over 80 Go micro-benchmarks, and the unified verification runner (`./scripts/test-bench.sh`).
 - [User Features Documentation](../features/README.md): High-level feature guides, practical workflows, and keyboard shortcuts for all px0 capabilities.
 - [AI Agent Operational Guidelines](../agents/README.md): Engineering principles for AI coding agents, mandatory documentation maintenance protocol, and frontend codebase index.
 - [Publishing & Release Guide](../../PUBLISHING.md): Step-by-step instructions for preparing, testing, and publishing new px0 releases.

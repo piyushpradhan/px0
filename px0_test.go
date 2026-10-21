@@ -6,6 +6,8 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1377,3 +1379,387 @@ func TestSettingsAPIEndpoints(t *testing.T) {
 
 
 
+// ---------------------------------------------------------------- Session tests
+
+func TestSessionAPIEndpoints(t *testing.T) {
+	// Isolate session path to a temp dir
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmpDir)
+
+	root := t.TempDir()
+	ix := NewIndex(root)
+	s := NewServer(ix, nil, "/rev-999/")
+
+	// 1. GET /rev-999/api/session initially
+	req := httptest.NewRequest(http.MethodGet, "/rev-999/api/session", nil)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /rev-999/api/session failed: code %d, body %s", rec.Code, rec.Body.String())
+	}
+	var initResp WorkspaceSession
+	if err := json.Unmarshal(rec.Body.Bytes(), &initResp); err != nil {
+		t.Fatalf("unmarshal session failed: %v", err)
+	}
+	if len(initResp.Tabs) != 0 {
+		t.Errorf("expected 0 tabs initially, got %d", len(initResp.Tabs))
+	}
+
+	// 2. POST /rev-999/api/session with tabs and openDirs
+	active := 1
+	payload := map[string]any{
+		"tabs": []map[string]string{
+			{"path": "foo.go"},
+			{"path": "bar.go"},
+		},
+		"active":   active,
+		"openDirs": []string{"pkg", "cmd"},
+	}
+	b, _ := json.Marshal(payload)
+	postReq := httptest.NewRequest(http.MethodPost, "/rev-999/api/session", bytes.NewReader(b))
+	postReq.Host = "127.0.0.1:7777"
+	postReq.Header.Set("Origin", "http://127.0.0.1:7777")
+	postReq.Header.Set("Content-Type", "application/json")
+	postRec := httptest.NewRecorder()
+	s.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("POST /rev-999/api/session failed: code %d, body %s", postRec.Code, postRec.Body.String())
+	}
+
+	// 3. Verify file was written to disk under rev-999.json
+	sessFile := filepath.Join(tmpDir, "px0", "sessions", "rev-999.json")
+	if _, err := os.Stat(sessFile); err != nil {
+		t.Fatalf("session file not found on disk: %v", err)
+	}
+
+	// 4. Create a new server instance with same basePath and check that state is restored
+	s2 := NewServer(ix, nil, "/rev-999/")
+	sess2 := s2.session.Get()
+	if len(sess2.Tabs) != 2 {
+		t.Fatalf("expected 2 tabs in restored session, got %d", len(sess2.Tabs))
+	}
+	if sess2.Tabs[0].Path != "foo.go" || sess2.Tabs[1].Path != "bar.go" {
+		t.Errorf("unexpected tab paths: %+v", sess2.Tabs)
+	}
+	if sess2.Active != 1 {
+		t.Errorf("expected active tab 1, got %d", sess2.Active)
+	}
+	if len(sess2.OpenDirs) != 2 || sess2.OpenDirs[0] != "pkg" || sess2.OpenDirs[1] != "cmd" {
+		t.Errorf("unexpected openDirs: %+v", sess2.OpenDirs)
+	}
+}
+
+func TestPRDraftSessionPersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmpDir)
+
+	root := t.TempDir()
+	ix := NewIndex(root)
+	s := NewServer(ix, nil, "/rev-42/")
+	pr := &prSession{
+		diffBase: "HEAD",
+	}
+	s.SetPR(pr)
+
+	// Add a draft comment via POST /rev-42/api/pr/comments
+	payload := map[string]any{
+		"path": "main.go",
+		"line": 25,
+		"side": "RIGHT",
+		"body": "Check this line",
+	}
+	b, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/rev-42/api/pr/comments", bytes.NewReader(b))
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1:7777")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /rev-42/api/pr/comments failed: code %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	// Create a second server instance simulating a restart
+	s2 := NewServer(ix, nil, "/rev-42/")
+	pr2 := &prSession{
+		diffBase: "HEAD",
+	}
+	s2.SetPR(pr2)
+
+	// Verify drafts were restored in pr2
+	pr2.mu.Lock()
+	defer pr2.mu.Unlock()
+	if len(pr2.comments) != 1 {
+		t.Fatalf("expected 1 restored draft comment, got %d", len(pr2.comments))
+	}
+	if pr2.comments[0].Path != "main.go" || pr2.comments[0].Body != "Check this line" {
+		t.Errorf("unexpected restored comment: %+v", pr2.comments[0])
+	}
+}
+
+func postDraft(t *testing.T, s *Server, prefix, body string) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"path": "main.go", "line": 25, "side": "RIGHT", "body": body})
+	req := httptest.NewRequest(http.MethodPost, prefix+"/api/pr/comments", bytes.NewReader(b))
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1:7777")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST %s/api/pr/comments failed: code %d, body %s", prefix, rec.Code, rec.Body.String())
+	}
+}
+
+// A direct `px0 <pr-url>` run has no base path and checks out into a new
+// temporary directory each time; drafts must still come back.
+func TestPRDraftsSurviveNewCheckoutRoot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	pt := PRTarget{Provider: "github", Owner: "acme", Repo: "widget", Number: 7}
+
+	s := NewServer(NewIndex(t.TempDir()), nil)
+	s.SetPR(&prSession{diffBase: "HEAD", target: pt})
+	postDraft(t, s, "", "first run")
+
+	s2 := NewServer(NewIndex(t.TempDir()), nil)
+	pr2 := &prSession{diffBase: "HEAD", target: pt}
+	s2.SetPR(pr2)
+	if len(pr2.comments) != 1 || pr2.comments[0].Body != "first run" {
+		t.Fatalf("expected the draft from the earlier run, got %+v", pr2.comments)
+	}
+
+	other := &prSession{diffBase: "HEAD", target: PRTarget{Provider: "github", Owner: "acme", Repo: "widget", Number: 8}}
+	NewServer(NewIndex(t.TempDir()), nil).SetPR(other)
+	if len(other.comments) != 0 {
+		t.Fatalf("another PR must not see these drafts, got %+v", other.comments)
+	}
+}
+
+// Drafts an older px0 saved under the base-path file move to the PR's file.
+func TestPRDraftsMigrateFromBasePathFile(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	newSessionManager("/w/abc/", root).Update(func(ws *WorkspaceSession) {
+		ws.Drafts = []prComment{{ID: 3, Path: "a.go", Line: 1, Side: "RIGHT", Body: "old"}}
+	})
+
+	pt := PRTarget{Provider: "github", Owner: "acme", Repo: "widget", Number: 7}
+	pr := &prSession{diffBase: "HEAD", target: pt}
+	NewServer(NewIndex(root), nil, "/w/abc/").SetPR(pr)
+	if len(pr.comments) != 1 || pr.comments[0].Body != "old" || pr.nextID != 3 {
+		t.Fatalf("expected the migrated draft, got %+v (nextID %d)", pr.comments, pr.nextID)
+	}
+	if got := newPRSessionManager(pt).Get().Drafts; len(got) != 1 {
+		t.Fatalf("expected the draft in the PR session file, got %+v", got)
+	}
+	if got := newSessionManager("/w/abc/", root).Get().Drafts; len(got) != 0 {
+		t.Fatalf("expected the base-path file's drafts cleared, got %+v", got)
+	}
+}
+
+// ---------------------------------------------------------------- Search cancellation tests
+
+func TestSearchContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 20; i++ {
+		content := "package main\n\nfunc SearchTarget() {}\n"
+		if err := os.WriteFile(filepath.Join(root, "file_"+string(rune('a'+i))+".go"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ix := NewIndex(root)
+	ix.Build()
+
+	// 1. Normal search should find all files
+	res, _, err := SearchContext(context.Background(), ix, SearchOpts{Query: "SearchTarget"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res) != 20 {
+		t.Fatalf("expected 20 file hits, got %d", len(res))
+	}
+
+	// 2. Search with already canceled context returns immediately
+	ctxCanceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = SearchContext(ctxCanceled, ix, SearchOpts{Query: "SearchTarget"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// 3. Search cancelled while in-flight terminates worker goroutines
+	ctxTimed, cancelTimed := context.WithTimeout(context.Background(), 10*time.Microsecond)
+	defer cancelTimed()
+	_, _, err = SearchContext(ctxTimed, ix, SearchOpts{Query: "SearchTarget"})
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected cancellation or deadline error, got %v", err)
+	}
+}
+
+func TestHandleSearchWithCanceledRequest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc Hello() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix := NewIndex(root)
+	ix.Build()
+	s := NewServer(ix, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=Hello", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel() // cancel immediately to simulate aborted request
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	s.handleSearch(rec, req)
+
+	// Since context was canceled, handleSearch should return cleanly without writing a 400 error
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("expected canceled search to return quietly, got status %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------- Benchmarks
+
+func BenchmarkSnip(b *testing.B) {
+	rawLine := []byte("    func handleSearchRequest(w http.ResponseWriter, r *http.Request, query string) (SearchResult, error) {")
+	from := 9
+	to := 28
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = snip(rawLine, from, to)
+	}
+}
+
+func BenchmarkSearchLiteralInMemory(b *testing.B) {
+	root := b.TempDir()
+	content := "package main\n\n// TargetSearchToken is here\nfunc TargetSearchToken() string { return \"ok\" }\n"
+	for i := 0; i < 20; i++ {
+		_ = os.WriteFile(filepath.Join(root, fmt.Sprintf("file_%d.go", i)), []byte(content), 0o644)
+	}
+	ix := NewIndex(root)
+	ix.Build()
+
+	opts := SearchOpts{
+		Query:    "TargetSearchToken",
+		MaxFiles: 50,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = SearchContext(context.Background(), ix, opts)
+	}
+}
+
+func BenchmarkSearchDefWord(b *testing.B) {
+	root := b.TempDir()
+	missContent := strings.Repeat("package main\nfunc helperFunc(x int) int { return x + 1 }\n", 50)
+	for i := 0; i < 40; i++ {
+		_ = os.WriteFile(filepath.Join(root, fmt.Sprintf("miss_%d.go", i)), []byte(missContent), 0o644)
+	}
+	hitContent := "package main\nfunc TargetSymbolDef() string { return \"ok\" }\n"
+	_ = os.WriteFile(filepath.Join(root, "hit.go"), []byte(hitContent), 0o644)
+
+	ix := NewIndex(root)
+	ix.Build()
+
+	opts := SearchOpts{
+		Query:        "TargetSymbolDef",
+		Word:         true,
+		Case:         true,
+		classifyDefs: true,
+		MaxFiles:     50,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = SearchContext(context.Background(), ix, opts)
+	}
+}
+
+func BenchmarkSortNodes(b *testing.B) {
+	base := make([]Node, 64)
+	for i := range base {
+		base[i] = Node{
+			Name: fmt.Sprintf("File_%02d_Component.go", 64-i),
+			Path: fmt.Sprintf("pkg/File_%02d_Component.go", 64-i),
+			Dir:  i%5 == 0,
+		}
+	}
+	work := make([]Node, len(base))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		copy(work, base)
+		sortNodes(work)
+	}
+}
+
+func BenchmarkHandleFileScrollChunk(b *testing.B) {
+	wd, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+	ix := NewIndex(wd)
+	ix.Build()
+	srv := &Server{ix: ix, lsp: newLSPManager(wd, false), diffBase: "HEAD"}
+	req := httptest.NewRequest(http.MethodGet, "/api/file?path=server.go&start=300&count=300", nil)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		w := httptest.NewRecorder()
+		srv.handleFile(w, req)
+	}
+}
+
+func TestFindIndexingStatus(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "testfile.txt"), []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ix := NewIndex(root)
+	srv := NewServer(ix, nil)
+
+	// Before indexing: indexing should be true and files empty
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/find?q=test", nil)
+	srv.handleFind(w, req)
+
+	var payload struct {
+		Results  []any `json:"results"`
+		Indexing bool  `json:"indexing"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode find response: %v", err)
+	}
+	if !payload.Indexing {
+		t.Fatalf("expected indexing: true before build")
+	}
+
+	// Build index
+	ix.Build()
+
+	// After indexing: indexing should be false and results found
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/api/find?q=testfile", nil)
+	srv.handleFind(w2, req2)
+
+	var payload2 struct {
+		Results  []any `json:"results"`
+		Indexing bool  `json:"indexing"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &payload2); err != nil {
+		t.Fatalf("decode find response 2: %v", err)
+	}
+	if payload2.Indexing {
+		t.Fatalf("expected indexing: false after build")
+	}
+	if len(payload2.Results) == 0 {
+		t.Fatalf("expected results after build, got 0")
+	}
+}

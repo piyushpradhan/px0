@@ -187,3 +187,86 @@ func TestTableTieBetweenSeparatorsKeepsTheExtension(t *testing.T) {
 		t.Errorf("tie picked %q, want the .csv comma", got)
 	}
 }
+
+type errReader struct {
+	failAt int
+	count  int
+}
+
+func (e *errReader) Read(p []byte) (int, error) {
+	if e.count >= e.failAt {
+		return 0, io.ErrUnexpectedEOF
+	}
+	e.count++
+	return copy(p, "col1,col2\n"), nil
+}
+
+func TestTableHelpersAndErrorBranches(t *testing.T) {
+	t.Parallel()
+
+	// 1. Delim and IsTable
+	d, ok := Delim("file.csv")
+	if !ok || d != ',' {
+		t.Errorf("expected comma for .csv, got %c, %v", d, ok)
+	}
+	d, ok = Delim("file.tsv")
+	if !ok || d != '\t' {
+		t.Errorf("expected tab for .tsv, got %c, %v", d, ok)
+	}
+	d, ok = Delim("file.txt")
+	if ok || d != 0 {
+		t.Errorf("expected no delim for .txt, got %c, %v", d, ok)
+	}
+
+	if !IsTable("data.csv") || !IsTable("data.tsv") || IsTable("data.json") {
+		t.Errorf("unexpected IsTable result")
+	}
+
+	// 2. SniffDelim with no newline in buffer
+	if delim := SniffDelim([]byte("a,b,c"), ','); delim != ',' {
+		t.Errorf("expected comma without newline, got %c", delim)
+	}
+
+	// 3. Header read error (!cut)
+	_, err := Render(&errReader{failAt: 0}, 100, ',')
+	if err == nil {
+		t.Error("expected error on header read failure")
+	}
+
+	// 4. Row read error (!cut)
+	_, err = Render(&errReader{failAt: 1}, 100, ',')
+	if err == nil {
+		t.Error("expected error on row read failure without cut")
+	}
+
+	// 5. Row read error (cut)
+	res, err := Render(&errReader{failAt: 1}, MaxBytes+100, ',')
+	if err != nil {
+		t.Errorf("unexpected error on cut row failure: %v", err)
+	}
+	if !res.Truncated {
+		t.Error("expected truncated result on cut")
+	}
+}
+
+func BenchmarkRenderTable(b *testing.B) {
+	src := `id,name,role,department,location,salary
+1,Alice,Engineer,Core,New York,150000
+2,Bob,Designer,UI,San Francisco,140000
+3,Charlie,Product,Core,Remote,160000
+4,Dana,DevOps,Infra,London,155000
+`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = Render(strings.NewReader(src), int64(len(src)), ',')
+	}
+}
+
+func BenchmarkSniffDelim(b *testing.B) {
+	data := []byte("id,name,role,department,location,salary\n1,Alice,Engineer,Core,New York,150000\n")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = SniffDelim(data, ',')
+	}
+}
+

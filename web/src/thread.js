@@ -453,8 +453,13 @@ function thrTurnHtml(turn) {
   if (turn.error) h += '<div class="thr-err">' + esc(turn.error) + '</div>';
   if (!turn.running) {
     if (turn.changed && turn.changed.length) {
-      h += '<div class="thr-changed"><span class="thr-changed-label">Changed ' + turn.changed.length + (turn.changed.length === 1 ? ' file' : ' files') + '</span>' +
-        turn.changed.map(p => '<button class="thr-file" data-path="' + esc(p) + '" title="Open ' + esc(p) + '">' + esc(p) + '</button>').join('') + '</div>';
+      const revertHtml = turn.beforeSha
+        ? (turn.reverted
+          ? '<span class="thr-reverted-badge">Reverted</span>'
+          : '<button type="button" class="thr-revert-btn" data-revert-turn="' + turn.id + '" title="Revert files modified in this turn back to pre-turn snapshot">Revert turn</button>')
+        : '';
+      h += '<div class="thr-changed"><div class="thr-changed-head"><span class="thr-changed-label">Changed ' + turn.changed.length + (turn.changed.length === 1 ? ' file' : ' files') + '</span>' + revertHtml + '</div>' +
+        turn.changed.map(p => '<button class="thr-file" data-path="' + esc(p) + '" data-turn-id="' + turn.id + '" title="Review changes in ' + esc(p) + '">' + esc(p) + '</button>').join('') + '</div>';
     } else if (turn.tracked === false) {
       h += '<div class="thr-changed"><span class="thr-changed-label">Changes unknown outside a git repository; the workspace was reloaded.</span></div>';
     }
@@ -733,8 +738,39 @@ export function initThreads() {
       openFile(link.dataset.path, { line: +link.dataset.line || 1 });
       return;
     }
+    const rev = /** @type {HTMLElement|null} */ (e.target)?.closest('[data-revert-turn]');
+    if (rev && thr.cur) {
+      const turnId = +rev.dataset.revertTurn;
+      rev.disabled = true;
+      apiPostJson('/api/threads/revert', { id: thr.cur.id, turn: turnId })
+        .then(updated => {
+          thr.cur = updated;
+          thrRenderState();
+          reloadWorkspace(null, 'Reverted turn #' + turnId);
+          showToast('Reverted turn #' + turnId, 'success', 2500);
+        })
+        .catch(err => {
+          rev.disabled = false;
+          showToast('!', 'Revert failed: ' + err.message);
+        });
+      return;
+    }
     const f = /** @type {HTMLElement|null} */ (e.target)?.closest('.thr-file');
-    if (f) openFile(f.dataset.path);
+    if (f) {
+      const turnId = +f.dataset.turnId;
+      const turn = thr.cur?.turns?.find(x => x.id === turnId);
+      if (turn && turn.beforeSha && turn.afterSha && !turn.reverted) {
+        openFile(f.dataset.path, {
+          ref: turn.afterSha,
+          base: turn.beforeSha,
+          turnFiles: turn.changed,
+          turnLabel: 'Turn #' + turn.id,
+          view: 'diff',
+        });
+      } else {
+        openFile(f.dataset.path);
+      }
+    }
   });
   const openFromList = e => {
     const delBtn = /** @type {HTMLElement|null} */ (e.target)?.closest('[data-del]');

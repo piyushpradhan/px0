@@ -1,7 +1,7 @@
 // web/src/vim.js
 import { $, esc, S, doc_, keyCaps, LH } from './state.js';
 import { vp, sizer, copyToClipboard, showToast } from './ui.js';
-import { render, paint, rowFor, placeCaret } from './renderer.js';
+import { render, paint, rowFor, placeCaret, getLH, lineTopY, lineAtScrollY } from './renderer.js';
 import { moveCursor, moveCol, moveWord, caretToEdge, updateDomSelection, clearSelection, revealCaretX } from './cursor.js';
 import { updateStatus } from './status.js';
 import { gotoDefinition, findReferences } from './lsp.js';
@@ -331,8 +331,9 @@ export function handleVimKeyDown(e) {
       if (!isNaN(count) && count > 0) {
         d.cur = Math.max(1, Math.min(d.total, count));
         d.col = 0;
-        const y = (d.cur - 1) * LH;
-        vp.scrollTop = Math.max(0, y - LH * 3);
+        const lh = getLH();
+        const y = lineTopY(d.cur, d);
+        vp.scrollTop = Math.max(0, y - lh * 3);
         render(); updateStatus();
       } else {
         vp.scrollTop = 0;
@@ -378,17 +379,19 @@ export function handleVimKeyDown(e) {
 
   if (vimPending === 'z') {
     e.preventDefault();
+    const lh = getLH();
+    const y = lineTopY(d.cur, d);
     if (e.key === 'z') {
       // zz: Center current line in viewport
-      vp.scrollTop = Math.max(0, (d.cur - 1) * LH - (vp.clientHeight - LH) / 2);
+      vp.scrollTop = Math.max(0, y - (vp.clientHeight - lh) / 2);
       render(); updateStatus();
     } else if (e.key === 't') {
       // zt: Scroll current line to top of viewport
-      vp.scrollTop = Math.max(0, (d.cur - 1) * LH);
+      vp.scrollTop = Math.max(0, y);
       render(); updateStatus();
     } else if (e.key === 'b') {
       // zb: Scroll current line to bottom of viewport
-      vp.scrollTop = Math.max(0, (d.cur - 1) * LH - vp.clientHeight + LH * 2);
+      vp.scrollTop = Math.max(0, y - vp.clientHeight + lh * 2);
       render(); updateStatus();
     }
     resetVimState();
@@ -467,8 +470,9 @@ export function handleVimKeyDown(e) {
       const targetLine = vimCount ? parseInt(vimCount, 10) : d.total;
       d.cur = Math.max(1, Math.min(d.total, targetLine));
       d.col = 0;
-      const y = (d.cur - 1) * LH;
-      vp.scrollTop = Math.max(0, y - LH * 3);
+      const lh = getLH();
+      const y = lineTopY(d.cur, d);
+      vp.scrollTop = Math.max(0, y - lh * 3);
       render(); updateStatus();
       if (isVisual) {
         placeCaret();
@@ -490,7 +494,7 @@ export function handleVimKeyDown(e) {
     }
     case 'H': {
       e.preventDefault();
-      const topL = Math.floor(vp.scrollTop / LH) + 1;
+      const topL = lineAtScrollY(vp.scrollTop, d);
       d.cur = Math.max(1, Math.min(d.total, topL));
       render(); updateStatus();
       if (isVisual) { placeCaret(); updateDomSelection(); if (vimMode === 'VISUAL_LINE') ensureLineSelection(); }
@@ -499,7 +503,7 @@ export function handleVimKeyDown(e) {
     }
     case 'M': {
       e.preventDefault();
-      const midL = Math.floor((vp.scrollTop + vp.clientHeight / 2) / LH) + 1;
+      const midL = lineAtScrollY(vp.scrollTop + vp.clientHeight / 2, d);
       d.cur = Math.max(1, Math.min(d.total, midL));
       render(); updateStatus();
       if (isVisual) { placeCaret(); updateDomSelection(); if (vimMode === 'VISUAL_LINE') ensureLineSelection(); }
@@ -508,7 +512,7 @@ export function handleVimKeyDown(e) {
     }
     case 'L': {
       e.preventDefault();
-      const botL = Math.floor((vp.scrollTop + vp.clientHeight - LH) / LH);
+      const botL = lineAtScrollY(Math.max(0, vp.scrollTop + vp.clientHeight - getLH()), d);
       d.cur = Math.max(1, Math.min(d.total, botL));
       render(); updateStatus();
       if (isVisual) { placeCaret(); updateDomSelection(); if (vimMode === 'VISUAL_LINE') ensureLineSelection(); }

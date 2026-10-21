@@ -183,7 +183,8 @@ export const refreshPalette = debounce(async () => {
     let j;
     try { j = await api('/api/find', { q, limit: 120 }); } catch { return; }
     if (seq !== palSeq || !pal) return;
-    pal.items = j.results.map(r => {
+    pal.indexing = !!j.indexing;
+    pal.items = (j.results || []).map(r => {
       const cut = r.path.length - r.name.length;
       return {
         kind: 'file', path: r.path,
@@ -192,6 +193,11 @@ export const refreshPalette = debounce(async () => {
         raw: true,
       };
     });
+    if (pal.indexing && pal.mode === 'file') {
+      setTimeout(() => {
+        if (pal && pal.mode === 'file' && pal.indexing) refreshPalette();
+      }, 300);
+    }
   }
   pal.sel = mode === 'theme' ? Math.max(0, pal.items.findIndex(it => it.id === currentTheme())) : 0;
   drawPalette();
@@ -212,7 +218,14 @@ export function fuzzyHTML(text, pos) {
 
 export function drawPalette() {
   if (!pal) return;
-  if (!pal.items.length) { palList.innerHTML = '<div class="pi"><span class="pp">No matches</span></div>'; return; }
+  if (!pal.items.length) {
+    if (pal.indexing) {
+      palList.innerHTML = '<div class="pi"><span class="pp">Indexing…</span></div>';
+      return;
+    }
+    palList.innerHTML = '<div class="pi"><span class="pp">No matches</span></div>';
+    return;
+  }
   palList.innerHTML = pal.items.map((it, i) =>
     '<div class="pi' + (i === pal.sel ? ' sel' : '') + '" data-i="' + i + '">' +
     '<span class="pn">' + (it.raw ? it.label : esc(it.label)) + '</span>' +

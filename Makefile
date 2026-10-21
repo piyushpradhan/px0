@@ -29,7 +29,12 @@ help:
 	@echo "  make web               - bundle web assets (JS/CSS/themes)"
 	@echo "  make test              - run go test suite"
 	@echo "  make test-short        - run fast unit tests (short mode)"
+	@echo "  make coverage          - run tests and output statement coverage per package"
+	@echo "  make verify            - run unified test and micro-benchmark verification (fast mode)"
+	@echo "  make verify-all        - run full test, benchmark and coverage verification suite"
 	@echo "  make check             - bundle web assets and run fast test suite"
+	@echo "  make bench             - run root Go micro-benchmarks"
+	@echo "  make benchmark         - run real repository macroscopic benchmarks"
 	@echo "  make dist              - compile cross-platform binaries into dist/"
 	@echo "  make publish <version> - bump VERSION, commit, tag, and build dist binaries"
 	@echo "  make clean             - remove build artifacts"
@@ -51,6 +56,15 @@ web-check:
 
 test-short:
 	go test -short ./...
+
+coverage: web
+	./scripts/test-bench.sh --test
+
+verify: web
+	./scripts/test-bench.sh --fast
+
+verify-all: web
+	./scripts/test-bench.sh
 
 check: web-check web test-short
 
