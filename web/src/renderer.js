@@ -56,6 +56,7 @@ export function updateEditorOptionControls() {
 }
 
 let raf = 0;
+let renderedFirst = 0;
 export function render() {
   if (raf) return;
   raf = requestAnimationFrame(() => { raf = 0; paint(); });
@@ -68,6 +69,7 @@ export function paint() {
   const first = Math.max(0, Math.floor(top / LH) - OVERSCAN);
   const count = Math.ceil(vp.clientHeight / LH) + OVERSCAN * 2;
   const last = Math.min(d.total, first + count);
+  renderedFirst = first;
   ensureChunks(d, first, last);
 
   let html = '';
@@ -284,8 +286,27 @@ export function wrapRange(el, from, to, cls) {
 }
 
 export function rowFor(line) {
+  const idx = line - renderedFirst - 1;
+  if (idx >= 0 && idx < rowsEl.children.length) {
+    const r = rowsEl.children[idx];
+    if (+r.dataset.l === line) return r;
+  }
   for (const r of rowsEl.children) if (+r.dataset.l === line) return r;
   return null;
+}
+
+export function updateLinkDecoration() {
+  for (const sp of rowsEl.querySelectorAll('span.link')) {
+    const parent = sp.parentNode;
+    if (parent) {
+      parent.replaceChild(document.createTextNode(sp.textContent || ''), sp);
+      parent.normalize();
+    }
+  }
+  if (S.link) {
+    const row = rowFor(S.link.line);
+    if (row) wrapRange($('.c', row), S.link.col, S.link.col + S.link.word.length, 'link');
+  }
 }
 
 export function ensureChunks(d, first, last) {

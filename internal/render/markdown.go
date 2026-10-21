@@ -1,9 +1,7 @@
-package main
+package render
 
 import (
 	"bytes"
-	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -26,13 +24,13 @@ import (
 const (
 	// A preview renders the whole file in one pass, unlike the windowed code
 	// view, so it stops at a size that still converts in well under a second.
-	maxMarkdownBytes = 4 << 20
+	MaxMarkdownBytes = 4 << 20
 
 	// Fenced blocks larger than this are shown without highlighting.
 	maxFenceBytes = 256 << 10
 )
 
-func isMarkdown(rel string) bool {
+func IsMarkdown(rel string) bool {
 	switch strings.ToLower(filepath.Ext(rel)) {
 	case ".md", ".markdown":
 		return true
@@ -56,7 +54,7 @@ var mdConverter = goldmark.New(
 	),
 )
 
-func renderMarkdown(src []byte) (string, error) {
+func RenderMarkdown(src []byte) (string, error) {
 	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
 	var buf bytes.Buffer
 	buf.Grow(len(src) * 2)
@@ -190,41 +188,4 @@ func highlightFence(code, lang string) string {
 		return htmlEscaper.Replace(code)
 	}
 	return strings.Join(highlightLines(chroma.Coalesce(lexer), code, strings.Count(code, "\n")+1), "\n")
-}
-
-// handleMarkdown serves a Markdown file rendered for the preview.
-func (s *Server) handleMarkdown(w http.ResponseWriter, r *http.Request) {
-	abs, rel, ok := s.resolvePath(r.URL.Query().Get("path"))
-	if !ok {
-		fail(w, 400, "bad path")
-		return
-	}
-	if !isMarkdown(rel) {
-		fail(w, 415, "not a Markdown file")
-		return
-	}
-	st, err := os.Stat(abs)
-	if err != nil {
-		fail(w, 404, err.Error())
-		return
-	}
-	if st.IsDir() {
-		fail(w, 415, "is a directory")
-		return
-	}
-	if st.Size() > maxMarkdownBytes {
-		fail(w, 413, "too large to preview")
-		return
-	}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		fail(w, 404, err.Error())
-		return
-	}
-	out, err := renderMarkdown(data)
-	if err != nil {
-		fail(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, map[string]any{"path": rel, "html": out})
 }

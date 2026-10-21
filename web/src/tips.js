@@ -339,10 +339,12 @@ export function initTips() {
  * Kicks off asynchronous loading of tips and polite display.
  */
 export async function startTipsAsync() {
+  // If tips are permanently hidden, skip network fetch and background rendering on startup
+  if (isTipsPermanentlyHidden()) return;
+
   await fetchTips();
   renderTipsList();
 
-  // If tips are permanently hidden, do not show the popup widget
   if (isTipsPermanentlyHidden()) return;
 
   // Non-intrusive async delay before showing the tip popup in the interface

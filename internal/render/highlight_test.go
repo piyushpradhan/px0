@@ -1,4 +1,4 @@
-package main
+package render
 
 import (
 	"fmt"
@@ -15,7 +15,11 @@ func fixtures(t *testing.T) []string {
 	var files []string
 	root := os.Getenv("PX0_FIXTURES")
 	if root == "" {
-		root = "."
+		if _, err := os.Stat("../../go.mod"); err == nil {
+			root = "../.."
+		} else {
+			root = "."
+		}
 	}
 	filepath.WalkDir(root, func(p string, de os.DirEntry, err error) error {
 		if err != nil {
@@ -354,4 +358,3 @@ func TestHighlightDiff(t *testing.T) {
 		t.Errorf("row 3 missing keyword or string class: %s", h.Rows[3].HTML)
 	}
 }
-

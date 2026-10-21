@@ -41,15 +41,12 @@ export function drawOutline() {
     if (rel) rel.innerHTML = '<div class="hint">No symbols found.</div>';
     return;
   }
-  const f = ($('#outline-filter')?.value || '').toLowerCase();
-  const rf = ($('#right-symbols-filter')?.value || '').toLowerCase();
-
-  const syms = f ? d.outline.filter(s => s.name.toLowerCase().includes(f)) : d.outline;
-  const rsyms = rf ? d.outline.filter(s => s.name.toLowerCase().includes(rf)) : d.outline;
-
   const renderSymHtml = (items) => {
     if (!items.length) return '<div class="hint">No symbols found.</div>';
-    const base = Math.min(...items.map(s => s.indent));
+    let base = Infinity;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].indent < base) base = items[i].indent;
+    }
     return (d.outlineSource ? '<div class="hint"><span class="src">' + esc(d.outlineSource) + '</span> · ' + items.length + ' symbols</div>' : '') +
       items.map(s =>
       '<div class="sym" data-n="' + s.line + '" style="padding-left:' + (10 + Math.min(s.indent - base, 16) * 5) + 'px" title="Jump to ' + esc(s.name) + ' at line ' + s.line + '">' +
@@ -57,8 +54,16 @@ export function drawOutline() {
       '<span class="sn">' + esc(s.name) + '</span><span class="sl">' + s.line + '</span></div>').join('');
   };
 
-  if (el) el.innerHTML = renderSymHtml(syms);
-  if (rel) rel.innerHTML = renderSymHtml(rsyms);
+  if (el) {
+    const f = ($('#outline-filter')?.value || '').toLowerCase();
+    const syms = f ? d.outline.filter(s => s.name.toLowerCase().includes(f)) : d.outline;
+    el.innerHTML = renderSymHtml(syms);
+  }
+  if (rel) {
+    const rf = ($('#right-symbols-filter')?.value || '').toLowerCase();
+    const rsyms = rf ? d.outline.filter(s => s.name.toLowerCase().includes(rf)) : d.outline;
+    rel.innerHTML = renderSymHtml(rsyms);
+  }
 }
 
 export const KIND_LABEL = {

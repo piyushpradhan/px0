@@ -92,26 +92,25 @@ func repoRelKey(info gitInfo, root string) func(string) (string, bool) {
 	}
 }
 
-// gitStatusAgainst maps changed files relative to root against base.
-// When base is "HEAD" or empty, it returns working-tree changes only.
-// When base is an arbitrary commit or ref (such as a PR merge-base),
-// it includes both files changed against base and working-tree changes.
-func gitStatusAgainst(root, base string) map[string]string {
+// gitStatusAndStagedAgainst runs a single `git status --porcelain=v2 -z -uall`
+// command to extract both working-tree status codes and staged index paths,
+// and optionally overlays diffs against base and head (for PR review mode)
+// without spawning duplicate git status processes.
+func gitStatusAndStagedAgainst(root, base, head string) (status map[string]string, staged map[string]bool, yourStatus map[string]string) {
 	info := gitProbe(root)
 	if !info.ok {
-		return nil
+		return nil, nil, nil
 	}
 	// Background status must not refresh the index and race explicit writes
 	// (stage/commit) for index.lock.
 	out, err := exec.Command("git", "--no-optional-locks", "-C", root, "status", "--porcelain=v2", "-z", "-uall").Output()
 	if err != nil {
-		return nil
+		return nil, nil, nil
 	}
-	// Porcelain paths are relative to the repo root regardless of -C, so strip
-	// the served root's offset within the repo to match the index's keys.
 	key := repoRelKey(info, root)
 
-	status := map[string]string{}
+	wtStatus := map[string]string{}
+	staged = map[string]bool{}
 	fields := strings.Split(string(out), "\x00")
 	for i := 0; i < len(fields); i++ {
 		f := fields[i]
@@ -121,20 +120,26 @@ func gitStatusAgainst(root, base string) map[string]string {
 		switch f[0] {
 		case '?': // "? <path>"
 			if k, ok := key(f[2:]); ok {
-				status[k] = "U" // untracked
+				wtStatus[k] = "U" // untracked
 			}
 		case '1': // "1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>"
 			p := strings.SplitN(f, " ", 9)
 			if len(p) == 9 {
 				if k, ok := key(p[8]); ok {
-					status[k] = mapXY(p[1])
+					wtStatus[k] = mapXY(p[1])
+					if len(p[1]) > 0 && p[1][0] != '.' {
+						staged[k] = true
+					}
 				}
 			}
 		case '2': // "2 <XY> ... <Rscore> <path>", then original path in the next field
 			p := strings.SplitN(f, " ", 10)
 			if len(p) == 10 {
 				if k, ok := key(p[9]); ok {
-					status[k] = mapXY(p[1])
+					wtStatus[k] = mapXY(p[1])
+					if len(p[1]) > 0 && p[1][0] != '.' {
+						staged[k] = true
+					}
 				}
 			}
 			i++ // the original path follows as its own NUL-terminated field
@@ -142,50 +147,69 @@ func gitStatusAgainst(root, base string) map[string]string {
 			p := strings.SplitN(f, " ", 11)
 			if len(p) == 11 {
 				if k, ok := key(p[10]); ok {
-					status[k] = "!" // unmerged / conflict
+					wtStatus[k] = "!" // unmerged / conflict
+					staged[k] = true
 				}
 			}
 		}
 	}
 
-	// If diff base is set and not HEAD, overlay git diff --name-status against base
+	overlayDiff := func(ref string) map[string]string {
+		m := make(map[string]string, len(wtStatus))
+		for k, v := range wtStatus {
+			m[k] = v
+		}
+		if ref != "" && ref != "HEAD" {
+			if diffOut, err := exec.Command("git", "-C", root, "diff", "--name-status", "-z", ref).Output(); err == nil {
+				parts := strings.Split(string(diffOut), "\x00")
+				for i := 0; i < len(parts); i++ {
+					stStr := parts[i]
+					if stStr == "" {
+						continue
+					}
+					code := stStr[0]
+					if code == 'R' || code == 'C' {
+						i += 2
+					} else {
+						i++
+					}
+					if i < len(parts) {
+						if k, ok := key(parts[i]); ok {
+							if _, exists := m[k]; !exists {
+								m[k] = string(code)
+							}
+						}
+					}
+				}
+			}
+		}
+		if len(m) == 0 {
+			return nil
+		}
+		return m
+	}
+
+	if head != "" {
+		yourStatus = overlayDiff(head)
+	}
 	if base != "" && base != "HEAD" {
-		if diffOut, err := exec.Command("git", "-C", root, "diff", "--name-status", "-z", base).Output(); err == nil {
-			parts := strings.Split(string(diffOut), "\x00")
-			for i := 0; i < len(parts); i++ {
-				stStr := parts[i]
-				if stStr == "" {
-					continue
-				}
-				code := stStr[0]
-				if code == 'R' || code == 'C' {
-					// R<score> \0 <src> \0 <dst>
-					i += 2
-					if i < len(parts) {
-						if k, ok := key(parts[i]); ok {
-							if _, exists := status[k]; !exists {
-								status[k] = string(code)
-							}
-						}
-					}
-				} else {
-					i++
-					if i < len(parts) {
-						if k, ok := key(parts[i]); ok {
-							if _, exists := status[k]; !exists {
-								status[k] = string(code)
-							}
-						}
-					}
-				}
-			}
-		}
+		status = overlayDiff(base)
+	} else if len(wtStatus) > 0 {
+		status = wtStatus
 	}
+	if len(staged) == 0 {
+		staged = nil
+	}
+	return status, staged, yourStatus
+}
 
-	if len(status) == 0 {
-		return nil
-	}
-	return status
+// gitStatusAgainst maps changed files relative to root against base.
+// When base is "HEAD" or empty, it returns working-tree changes only.
+// When base is an arbitrary commit or ref (such as a PR merge-base),
+// it includes both files changed against base and working-tree changes.
+func gitStatusAgainst(root, base string) map[string]string {
+	st, _, _ := gitStatusAndStagedAgainst(root, base, "")
+	return st
 }
 
 // mapXY collapses a porcelain v2 two-letter XY code (X=index, Y=worktree) into

@@ -98,6 +98,6 @@ func (ix *Index) Find(q string, limit int) []FuzzyResult {
 ### Concurrency Pipeline
 
 1. The `files` slice is partitioned into equal chunks across `runtime.NumCPU()` workers.
-1. Each worker allocates a local result buffer and evaluates its chunk independently without lock contention.
-1. Once all workers finish, top candidate slices are merged and sorted in-place.
-1. The sorted results are capped at `limit` (typically 50 results) and returned to the client as JSON.
+1. Each worker maintains a bounded min-heap of capacity `limit` (backed by a preallocated position slab `posSlab`) and evaluates its chunk independently without lock contention or per-match heap allocations.
+1. Once all workers finish, the top-`limit` candidate heaps from each worker are merged and sorted in-place.
+1. The sorted results are capped at `limit` (typically 50–100 results) and returned to the client as JSON.

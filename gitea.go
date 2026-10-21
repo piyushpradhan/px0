@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"px0/internal/settings"
 )
 
 // gitea.go implements GitProvider for Gitea through its REST API (v1), which
@@ -88,7 +90,7 @@ func (g *GiteaProvider) ParseURL(rawURL string) (PRTarget, error) {
 
 func (g *GiteaProvider) MatchRemote(remoteURL string) bool {
 	host := remoteHost(remoteURL)
-	return host != "" && (host == giteaTokenHost(readSettings()) || host == "codeberg.org" ||
+	return host != "" && (host == giteaTokenHost(settings.Read()) || host == "codeberg.org" ||
 		strings.Contains(host, "gitea") || strings.Contains(host, "forgejo"))
 }
 
@@ -108,7 +110,7 @@ func (g *GiteaProvider) GitAuth(t PRTarget, token string) gitAuth {
 // giteaTokenHost is the one host the gitea.token setting and GITEA_TOKEN are
 // sent to: the gitea.host setting, else GITEA_HOST, else codeberg.org. A PR
 // URL can name any host, and a token must never reach one it wasn't issued by.
-func giteaTokenHost(cfg settings) string {
+func giteaTokenHost(cfg settings.Settings) string {
 	h := ""
 	if cfg.GiteaHost != nil {
 		h = strings.TrimSpace(*cfg.GiteaHost)
@@ -119,7 +121,7 @@ func giteaTokenHost(cfg settings) string {
 	return normalizeHost(h, "codeberg.org")
 }
 
-func (g *GiteaProvider) ResolveToken(cfg settings, t PRTarget) (token, source string) {
+func (g *GiteaProvider) ResolveToken(cfg settings.Settings, t PRTarget) (token, source string) {
 	if t.Host != "" && t.Host != giteaTokenHost(cfg) {
 		return "", ""
 	}

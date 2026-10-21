@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"px0/internal/settings"
 )
 
 func TestGitLabParseURL(t *testing.T) {
@@ -78,12 +80,12 @@ func TestGitLabTokenScopedToHost(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "envtok")
 	t.Setenv("PATH", t.TempDir()) // no glab
 	tok := "settok"
-	cfg := settings{GitLabToken: &tok}
+	cfg := settings.Settings{GitLabToken: &tok}
 	g := &GitLabProvider{}
 	if got, src := g.ResolveToken(cfg, PRTarget{Host: "gitlab.com"}); got != "settok" || src != "settings" {
 		t.Errorf("gitlab.com: %q/%q", got, src)
 	}
-	if got, _ := g.ResolveToken(settings{}, PRTarget{Host: "gitlab.com"}); got != "envtok" {
+	if got, _ := g.ResolveToken(settings.Settings{}, PRTarget{Host: "gitlab.com"}); got != "envtok" {
 		t.Errorf("gitlab.com env: %q", got)
 	}
 	if got, _ := g.ResolveToken(cfg, PRTarget{Host: "evil.example.com"}); got != "" {

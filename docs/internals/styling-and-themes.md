@@ -8,7 +8,7 @@ px0 reads every colour in the user interface through a CSS custom property, know
 
 - `web/style.css`: Holds layout, grid geometry, and component styling. It contains no literal colors. Its `:root` block defines structural typography tokens (fonts, sizes) and provides fallbacks for optional colour tokens.
 - `web/themes/<id>.css`: Each theme resides in its own file under [`web/themes/`](../../web/themes/), containing a single rule for `:root[data-theme="<id>"]`. The filename without extension acts as the theme ID.
-- Dynamic Concatenation (`/static/themes.css`): The Go server concatenates every file matching `web/themes/*.css` in alphanumeric order and serves the result dynamically at `/static/themes.css`. [`web/index.html`](../../web/index.html) links this file immediately after `style.css`.
+- Dynamic Concatenation (`/static/themes.css`): The Go server concatenates every file matching `web/themes/*.css` in alphanumeric order once (`sync.Once`) and serves the cached stylesheet at `/static/themes.css`. [`web/index.html`](../../web/index.html) links this file immediately after `style.css`.
 - Client-Side Discovery: At application boot, [`web/src/theme.js`](../../web/src/theme.js) scans the loaded document stylesheets for rules matching `:root[data-theme="<id>"]`. It extracts the human-readable display name from `--theme-name` and the color scheme hint from `color-scheme`.
 - State Persistence: The active theme is applied via the `data-theme` attribute on the `<html>` root element and persisted in `localStorage` under `px0.theme`. If a saved theme is removed, px0 falls back to the default `catppuccin-mocha`.
 

@@ -11,6 +11,7 @@ import (
 type Item struct {
 	Path      string `json:"path"`
 	Name      string `json:"name"`
+	Size      int64  `json:"size"`
 	Lower     string `json:"-"`
 	NameStart int    `json:"-"`
 }
@@ -121,6 +122,34 @@ func Score(q, origQ, path, lowerPath string, nameStart int, pos []int) (int, []i
 	return score, pos, true
 }
 
+// worseResult reports whether a is strictly worse than b (lower score, or same score and lexicographically greater path).
+func worseResult(a, b Result) bool {
+	if a.Score != b.Score {
+		return a.Score < b.Score
+	}
+	return a.Path > b.Path
+}
+
+// siftDownResult maintains a min-heap of Result ordered by worseResult (root h[0] is the worst of the top-K).
+func siftDownResult(h []Result, i int) {
+	n := len(h)
+	for {
+		left := 2*i + 1
+		if left >= n {
+			break
+		}
+		smallest := left
+		if right := left + 1; right < n && worseResult(h[right], h[left]) {
+			smallest = right
+		}
+		if !worseResult(h[smallest], h[i]) {
+			break
+		}
+		h[i], h[smallest] = h[smallest], h[i]
+		i = smallest
+	}
+}
+
 // Find ranks items against query and returns the best limit results.
 func Find(items []Item, query string, limit int) []Result {
 	origQ := strings.ReplaceAll(strings.TrimSpace(query), " ", "")
@@ -138,11 +167,15 @@ func Find(items []Item, query string, limit int) []Result {
 	}
 
 	workers := runtime.NumCPU()
+	if len(items) < 1024 {
+		workers = 1
+	}
 	chunk := (len(items) + workers - 1) / workers
 	if chunk == 0 {
 		chunk = 1
 	}
 	parts := make([][]Result, workers)
+	qLen := len(q)
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		lo := w * chunk
@@ -153,11 +186,38 @@ func Find(items []Item, query string, limit int) []Result {
 		wg.Add(1)
 		go func(w, lo, hi int) {
 			defer wg.Done()
-			local := make([]Result, 0, 64)
-			scratch := make([]int, 0, 64)
+			capLimit := limit
+			if capLimit <= 0 || capLimit > hi-lo {
+				capLimit = min(64, hi-lo)
+			}
+			local := make([]Result, 0, capLimit)
+			var posSlab []int
+			if limit > 0 {
+				posSlab = make([]int, limit*qLen)
+			}
+			scratch := make([]int, 0, max(64, qLen))
 			for i := lo; i < hi; i++ {
 				s, pos, ok := Score(q, origQ, items[i].Path, items[i].Lower, items[i].NameStart, scratch)
 				if !ok {
+					continue
+				}
+				if limit > 0 {
+					if len(local) < limit {
+						slot := len(local)
+						cp := posSlab[slot*qLen : (slot+1)*qLen]
+						copy(cp, pos)
+						local = append(local, Result{Path: items[i].Path, Name: items[i].Name, Pos: cp, Score: s})
+						if len(local) == limit {
+							for k := limit/2 - 1; k >= 0; k-- {
+								siftDownResult(local, k)
+							}
+						}
+					} else if s > local[0].Score || (s == local[0].Score && items[i].Path < local[0].Path) {
+						cp := local[0].Pos
+						copy(cp, pos)
+						local[0] = Result{Path: items[i].Path, Name: items[i].Name, Pos: cp, Score: s}
+						siftDownResult(local, 0)
+					}
 					continue
 				}
 				cp := make([]int, len(pos))
@@ -169,7 +229,11 @@ func Find(items []Item, query string, limit int) []Result {
 	}
 	wg.Wait()
 
-	var all []Result
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+	}
+	all := make([]Result, 0, total)
 	for _, p := range parts {
 		all = append(all, p...)
 	}
@@ -179,7 +243,7 @@ func Find(items []Item, query string, limit int) []Result {
 		}
 		return all[i].Path < all[j].Path
 	})
-	if len(all) > limit {
+	if limit > 0 && len(all) > limit {
 		all = all[:limit]
 	}
 	return all

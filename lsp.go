@@ -813,6 +813,13 @@ func (c *lspClient) ensureOpen(abs, rel string) error {
 	if err := c.alive(); err != nil {
 		return err
 	}
+	// Fast path: skip disk I/O if the document was already opened.
+	c.mu.RLock()
+	_, already := c.opened[uri]
+	c.mu.RUnlock()
+	if already {
+		return nil
+	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return err
@@ -827,7 +834,7 @@ func (c *lspClient) ensureOpen(abs, rel string) error {
 		return err
 	}
 	c.mu.RLock()
-	_, already := c.opened[uri]
+	_, already = c.opened[uri]
 	c.mu.RUnlock()
 	if already {
 		return nil
@@ -1113,10 +1120,14 @@ func (c *lspClient) fromLSP(lines []string, p lspPosition) (int, int) {
 	if p.Line < 0 || p.Line >= len(lines) {
 		return line, 0
 	}
+	return c.fromLSPLine(lines[p.Line], p)
+}
+
+func (c *lspClient) fromLSPLine(text string, p lspPosition) (int, int) {
+	line := p.Line + 1
 	if p.Character <= 0 {
 		return line, 0
 	}
-	text := lines[p.Line]
 	switch c.encoding {
 	case "utf-8":
 		if p.Character > len(text) {

@@ -148,14 +148,13 @@ func (s *IgnoreSet) AddPatterns(patterns []string) {
 // Match reports whether rel (slash-separated, relative to the scan root)
 // is ignored. isDir enables dir-only rules.
 func (s *IgnoreSet) Match(rel string, isDir bool) bool {
-	ignored := false
-	for i := range s.Rules {
+	for i := len(s.Rules) - 1; i >= 0; i-- {
 		r := &s.Rules[i]
 		if r.Hit(rel, isDir) {
-			ignored = !r.Negate
+			return !r.Negate
 		}
 	}
-	return ignored
+	return false
 }
 
 func CompilePattern(p string) (Rule, bool) {

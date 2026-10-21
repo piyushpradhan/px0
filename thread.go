@@ -19,6 +19,9 @@ import (
 	"time"
 
 	"github.com/px0-ai/harness"
+
+	"px0/internal/settings"
+	"px0/internal/ui"
 )
 
 // Threads are long-running, multi-turn conversations with a coding harness,
@@ -134,7 +137,7 @@ type threadManager struct {
 // threadStorePath keeps every workspace's threads beside settings.json, never
 // inside the working tree.
 func threadStorePath(root string) string {
-	sp := settingsPath()
+	sp := settings.Path()
 	if sp == "" {
 		return ""
 	}
@@ -472,7 +475,7 @@ func (tm *threadManager) Send(id, message string) (*thread, error) {
 	}
 	name, base, model := tm.agent.current()
 	if base == nil {
-		uiStatus("err", "thread", "dispatch refused: no coding harness selected", 0, os.Stdout)
+		ui.Status("err", "thread", "dispatch refused: no coding harness selected", 0, os.Stdout)
 		return nil, errAgentNone
 	}
 
@@ -512,7 +515,7 @@ func (tm *threadManager) Send(id, message string) (*thread, error) {
 	if model != "" {
 		modelNote = " (" + model + ")"
 	}
-	uiStatus("step", "thread", fmt.Sprintf("%s turn %d · %s%s · %s", id, turn.ID, name, modelNote, t.Title), 0, os.Stdout)
+	ui.Status("step", "thread", fmt.Sprintf("%s turn %d · %s%s · %s", id, turn.ID, name, modelNote, t.Title), 0, os.Stdout)
 
 	go tm.runTurn(ctx, cancel, &threadRun{tid: id, turn: turn, name: name, model: model, base: base, message: message, prior: prior})
 	return tm.Get(id), nil
@@ -588,8 +591,8 @@ func (tm *threadManager) runTurn(ctx context.Context, cancel context.CancelFunc,
 		argv = threadArgv(r.name, r.base, sessionID, live)
 	}
 
-	if uiVerbose {
-		uiVerbosePrompt(0, r.name, prompt, os.Stdout)
+	if ui.Verbose {
+		ui.VerbosePrompt(0, r.name, prompt, os.Stdout)
 	}
 
 	before := worktreeSnapshot(tm.root)
@@ -641,11 +644,11 @@ func (tm *threadManager) runTurn(ctx context.Context, cancel context.CancelFunc,
 	}
 	tm.mu.Unlock()
 
-	dur := fmtDuration(time.Since(started))
+	dur := ui.FmtDuration(time.Since(started))
 	if err != nil {
-		uiStatus("err", "thread", fmt.Sprintf("%s turn %d failed in %s: %s", r.tid, r.turn.ID, dur, err.Error()), 0, os.Stdout)
+		ui.Status("err", "thread", fmt.Sprintf("%s turn %d failed in %s: %s", r.tid, r.turn.ID, dur, err.Error()), 0, os.Stdout)
 	} else {
-		uiStatus("ok", "thread", fmt.Sprintf("%s turn %d · %s  (%d files changed)", r.tid, r.turn.ID, dur, len(changed)), 0, os.Stdout)
+		ui.Status("ok", "thread", fmt.Sprintf("%s turn %d · %s  (%d files changed)", r.tid, r.turn.ID, dur, len(changed)), 0, os.Stdout)
 	}
 }
 
@@ -1289,7 +1292,7 @@ func (tm *threadManager) StartEdit(items []agentBatchItem) (*agentJob, error) {
 	}
 
 	if busy := tm.overlappingEdit(items); busy != "" {
-		uiStatus("warn", "agent", "edit dispatch refused: "+busy, 0, os.Stdout)
+		ui.Status("warn", "agent", "edit dispatch refused: "+busy, 0, os.Stdout)
 		return nil, fmt.Errorf("%w: %s", errAgentBusy, busy)
 	}
 

@@ -78,9 +78,16 @@ export const runFind = debounce(async () => {
 export function drawMinimap(hits, total) {
   const mm = $('#minimap-hits');
   if (!hits.length || !total) { mm.innerHTML = ''; return; }
-  const seen = new Set();
-  mm.innerHTML = hits.filter(h => !seen.has(h.line) && seen.add(h.line))
-    .map(h => '<i style="top:' + ((h.line - 1) / total * 100).toFixed(3) + '%"></i>').join('');
+  const seenBuckets = new Set();
+  const parts = [];
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i];
+    const bucket = Math.round((h.line - 1) / total * 400);
+    if (seenBuckets.has(bucket)) continue;
+    seenBuckets.add(bucket);
+    parts.push('<i style="top:' + ((h.line - 1) / total * 100).toFixed(2) + '%"></i>');
+  }
+  mm.innerHTML = parts.join('');
 }
 
 export function jumpToHit(i) {

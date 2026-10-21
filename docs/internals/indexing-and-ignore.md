@@ -97,8 +97,9 @@ type FileEntry struct {
 }
 ```
 
-- Precomputed Lowercase (`lower`): Computed once during traversal. Fuzzy matching and case-insensitive queries run directly against this slice without string allocations during user typing.
+- Precomputed Lowercase (`lower`): Computed once during traversal (reusing the original `Path` string when already lowercase). Fuzzy matching and case-insensitive queries run directly against this slice without string allocations during user typing.
 - `nameStart`: Caches the byte offset of the basename (e.g., `src/components/Button.tsx` $\to 15$). This allows the fuzzy scoring matrix to award basename match bonuses without runtime string splitting.
+- Batched Directory Appends & Sorting: During `Index.Build()`, each worker collects a directory's `FileEntry` values locally and appends them under a single mutex acquisition along with `ix.children[rel]`. Directory entries (`sortNodes`) are ordered using a zero-allocation case-insensitive ASCII comparator (`lessFoldASCII`).
 
 ### `Node` (Explorer Tree Representation)
 
@@ -152,7 +153,7 @@ Directories can contain nested `.gitignore` files that override or extend parent
 
 - `ignoreSet` forms a linked tree where child directories point to their parent `ignoreSet`.
 - When entering a directory containing a `.gitignore`, a child set is constructed with `ig.child(readGitignore(abs, rel))`.
-- Rules are evaluated from child to root, respecting negation patterns (`!file.txt`).
+- Because gitignore semantics are last-match-wins, `IgnoreSet.Match` iterates rules in reverse (`len(s.Rules)-1` down to `0`) and returns `!r.Negate` on the first match.
 
 ## 4. Ignored Directory Semantics (Listing vs. Descent)
 

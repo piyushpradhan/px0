@@ -9,18 +9,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"px0/internal/fuzzy"
+	"px0/internal/ignore"
 )
 
 // FileEntry represents a single indexed file in the workspace,
 // storing its relative path, name, size, and pre-computed lowercase representation
 // for fast fuzzy searching.
-type FileEntry struct {
-	Path      string `json:"path"` // Slash-separated path relative to workspace root
-	Name      string `json:"name"` // Basename of the file
-	Size      int64  `json:"size"` // File size in bytes
-	lower     string // Cached lowercase Path for fast case-insensitive matching
-	nameStart int    // Byte offset in Path where the basename begins
-}
+type FileEntry = fuzzy.Item
 
 // Node represents a file or directory entry in the hierarchical file tree view.
 type Node struct {
@@ -289,13 +286,77 @@ func (ix *Index) listIgnored(dir string) ([]Node, bool) {
 	return kids, true
 }
 
+// HasDiffAvailable reports in O(1) whether rel has a tracked git diff according
+// to the in-memory index maps (excluding untracked "U" files), or whether the
+// caller should fall back when diffBase differs from the index's diffBase.
+func (ix *Index) HasDiffAvailable(rel, serverDiffBase string, isPR bool) (avail, authoritative bool) {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	ixBase := ix.diffBase
+	if ixBase == "" {
+		ixBase = "HEAD"
+	}
+	srvBase := serverDiffBase
+	if srvBase == "" {
+		srvBase = "HEAD"
+	}
+	if ixBase != srvBase || (ix.gitStatusMap == nil && ix.builtAt.IsZero()) {
+		return false, false
+	}
+	if st := ix.gitStatusMap[rel]; st != "" && st != "U" {
+		return true, true
+	}
+	if isPR {
+		if st := ix.prFiles[rel]; st != "" && st != "U" {
+			return true, true
+		}
+		if st := ix.gitYourStatusMap[rel]; st != "" && st != "U" {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+func toLowerIfNeeded(s string) string {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || c >= 0x80 {
+			return strings.ToLower(s)
+		}
+	}
+	return s
+}
+
+func lessFoldASCII(a, b string) bool {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 0x80 || cb >= 0x80 {
+			return strings.ToLower(a) < strings.ToLower(b)
+		}
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return ca < cb
+		}
+	}
+	return len(a) < len(b)
+}
+
 // sortNodes orders a listing directories first, then case-insensitively by name.
 func sortNodes(kids []Node) {
 	sort.Slice(kids, func(i, j int) bool {
 		if kids[i].Dir != kids[j].Dir {
 			return kids[i].Dir
 		}
-		return strings.ToLower(kids[i].Name) < strings.ToLower(kids[j].Name)
+		return lessFoldASCII(kids[i].Name, kids[j].Name)
 	})
 }
 
@@ -305,8 +366,8 @@ func sortNodes(kids []Node) {
 // the frontend can display the file tree without waiting for the full repo scan.
 func (ix *Index) Build() {
 	start := time.Now()
-	root := newIgnoreSet(nil)
-	root = root.Child(readGitignore(ix.root, ""))
+	root := ignore.New(nil)
+	root = root.Child(ignore.ReadGitignore(ix.root, ""))
 
 	// Git status is computed up front, before the walk, rather than
 	// concurrently with it. It used to run in a goroutine so its ~80ms
@@ -318,8 +379,8 @@ func (ix *Index) Build() {
 	// every node -- including the immediate root snapshot -- is published
 	// with correct git status from the start.
 	base := ix.DiffBase()
-	gs := gitStatusAgainst(ix.root, base)
-	staged := gitStagedPaths(ix.root)
+	head := ix.PRHead()
+	gs, staged, yourStatuses := gitStatusAndStagedAgainst(ix.root, base, head)
 	dirtyDirs := map[string]bool{}
 	var gitFiles []string
 	if gs != nil {
@@ -339,11 +400,8 @@ func (ix *Index) Build() {
 		})
 	}
 
-	head := ix.PRHead()
-	var yourStatuses map[string]string
 	yourDirtyDirs := map[string]bool{}
-	if head != "" {
-		yourStatuses = gitStatusAgainst(ix.root, head)
+	if yourStatuses != nil {
 		for p := range yourStatuses {
 			for i := strings.LastIndexByte(p, '/'); i >= 0; i = strings.LastIndexByte(p, '/') {
 				p = p[:i]
@@ -360,19 +418,20 @@ func (ix *Index) Build() {
 		sem      = make(chan struct{}, runtime.NumCPU()*4)
 	)
 
-	var walk func(abs, rel string, ig *ignoreSet)
-	walk = func(abs, rel string, ig *ignoreSet) {
+	var walk func(abs, rel string, ig *ignore.IgnoreSet)
+	walk = func(abs, rel string, ig *ignore.IgnoreSet) {
 		defer wg.Done()
 		ents, err := os.ReadDir(abs)
 		if err != nil {
 			return
 		}
 		if rel != "" {
-			if extra := readGitignore(abs, rel); len(extra) > 0 {
+			if extra := ignore.ReadGitignore(abs, rel); len(extra) > 0 {
 				ig = ig.Child(extra)
 			}
 		}
 		kids := make([]Node, 0, len(ents))
+		localFiles := make([]FileEntry, 0, len(ents))
 		var subdirs []struct {
 			abs, rel string
 		}
@@ -405,16 +464,15 @@ func (ix *Index) Build() {
 				continue
 			}
 			kids = append(kids, Node{Name: name, Path: childRel, Size: info.Size(), Status: gs[childRel], Staged: staged[childRel], YourStatus: yourStatuses[childRel]})
-			mu.Lock()
-			files = append(files, FileEntry{
+			localFiles = append(localFiles, FileEntry{
 				Path: childRel, Name: name, Size: info.Size(),
-				lower: strings.ToLower(childRel), nameStart: len(childRel) - len(name),
+				Lower: toLowerIfNeeded(childRel), NameStart: len(childRel) - len(name),
 			})
-			mu.Unlock()
 		}
 		sortNodes(kids)
 		mu.Lock()
 		children[rel] = kids
+		files = append(files, localFiles...)
 		mu.Unlock()
 
 		// If this is the root directory, make it available to ix.Children("")
@@ -451,7 +509,7 @@ func (ix *Index) Build() {
 			wg.Add(1)
 			select {
 			case sem <- struct{}{}:
-				go func(a, r string, g *ignoreSet) {
+				go func(a, r string, g *ignore.IgnoreSet) {
 					defer func() { <-sem }()
 					walk(a, r, g)
 				}(sd.abs, sd.rel, ig)
@@ -611,20 +669,17 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 	}
 
 	base := ix.DiffBase()
-	gs := gitStatusAgainst(ix.root, base)
+	head := ix.PRHead()
+	gs, sg, ys := gitStatusAndStagedAgainst(ix.root, base, head)
 	if gs == nil {
 		gs = map[string]string{}
 	}
-	sg := gitStagedPaths(ix.root)
 	if sg == nil {
 		sg = map[string]bool{}
 	}
 
-	head := ix.PRHead()
-	var ys map[string]string
 	newYourDirtyDirs := map[string]bool{}
 	if head != "" {
-		ys = gitStatusAgainst(ix.root, head)
 		if ys == nil {
 			ys = map[string]string{}
 		}

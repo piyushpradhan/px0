@@ -44,13 +44,13 @@ build: web
 	@echo "Built ./px0 ($$(du -h px0 | cut -f1))"
 
 test: web
-	go test -v .
+	go test -v ./...
 
 web-check:
 	@node ./scripts/check-web.js
 
 test-short:
-	go test -short .
+	go test -short ./...
 
 check: web-check web test-short
 

@@ -1,4 +1,4 @@
-package main
+package settings
 
 import (
 	"encoding/json"
@@ -12,9 +12,9 @@ import (
 // are stored with the other per-user files px0 writes (~/.px0/settings.json),
 // never in the working tree.
 
-// settings stores user configuration written to ~/.px0/settings.json (or XDG_CONFIG_HOME/px0/settings.json).
+// Settings stores user configuration written to ~/.px0/settings.json (or XDG_CONFIG_HOME/px0/settings.json).
 // All settings are optional pointers so omitted values fall back to application defaults.
-type settings struct {
+type Settings struct {
 	Agent  string            `json:"agent,omitempty"`
 	Models map[string]string `json:"models,omitempty"`
 
@@ -47,9 +47,9 @@ type settings struct {
 
 var settingsMu sync.Mutex
 
-// settingsPath mirrors stateFilePath in update.go: honour the XDG location when
+// Path mirrors stateFilePath in update.go: honour the XDG location when
 // it is set, otherwise fall back to ~/.px0.
-func settingsPath() string {
+func Path() string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "px0", "settings.json")
 	}
@@ -60,8 +60,8 @@ func settingsPath() string {
 	return filepath.Join(home, ".px0", "settings.json")
 }
 
-// settingSchemaItem describes a configurable setting for dynamic rendering in the settings modal.
-type settingSchemaItem struct {
+// SchemaItem describes a configurable setting for dynamic rendering in the settings modal.
+type SchemaItem struct {
 	Key         string   `json:"key"`
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
@@ -77,7 +77,7 @@ type settingSchemaItem struct {
 
 func numPtr(v float64) *float64 { return &v }
 
-var settingsSchema = []settingSchemaItem{
+var Schema = []SchemaItem{
 	{
 		Key:         "editor.fontSize",
 		Title:       "Font Size",
@@ -438,9 +438,9 @@ var settingsSchema = []settingSchemaItem{
 	},
 }
 
-func defaultSettingsMap() map[string]any {
-	res := make(map[string]any, len(settingsSchema)+3)
-	for _, item := range settingsSchema {
+func DefaultMap() map[string]any {
+	res := make(map[string]any, len(Schema)+3)
+	for _, item := range Schema {
 		res[item.Key] = item.Default
 	}
 	res["explorer.autoRelveal"] = true
@@ -449,10 +449,10 @@ func defaultSettingsMap() map[string]any {
 	return res
 }
 
-// readSettingsRawMap returns the raw JSON contents unmarshaled into a map.
+// ReadRawMap returns the raw JSON contents unmarshaled into a map.
 // It never fails: a missing or corrupt file returns an empty map.
-func readSettingsRawMap() map[string]any {
-	p := settingsPath()
+func ReadRawMap() map[string]any {
+	p := Path()
 	if p == "" {
 		return map[string]any{}
 	}
@@ -467,25 +467,31 @@ func readSettingsRawMap() map[string]any {
 	return m
 }
 
-// readSettings never fails: a missing or corrupt file simply means no choice
+// Read never fails: a missing or corrupt file simply means no choice
 // has been made yet, which is the same as a fresh install.
-func readSettings() settings {
+func Read() Settings {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 	return readSettingsLocked()
 }
 
-func readSettingsLocked() settings {
-	var s settings
-	raw := readSettingsRawMap()
-	if len(raw) == 0 {
+func readSettingsLocked() Settings {
+	var s Settings
+	p := Path()
+	if p == "" {
+		return s
+	}
+	data, err := os.ReadFile(p)
+	if err != nil || len(data) == 0 {
+		return s
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil || len(raw) == 0 {
 		return s
 	}
 
-	// Unmarshal known typed fields
-	if b, err := json.Marshal(raw); err == nil {
-		_ = json.Unmarshal(b, &s)
-	}
+	// Unmarshal known typed fields directly from data without re-marshaling raw
+	_ = json.Unmarshal(data, &s)
 
 	// Bi-directional bridge between agent <-> agent.harness
 	if s.Agent == "" {
@@ -528,13 +534,13 @@ func readSettingsLocked() settings {
 	return s
 }
 
-// readMergedSettingsMap returns all settings, overlaying stored settings onto defaults.
-func readMergedSettingsMap() map[string]any {
+// ReadMergedMap returns all settings, overlaying stored settings onto defaults.
+func ReadMergedMap() map[string]any {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 
-	res := defaultSettingsMap()
-	raw := readSettingsRawMap()
+	res := DefaultMap()
+	raw := ReadRawMap()
 
 	for k, v := range raw {
 		res[k] = v
@@ -582,12 +588,12 @@ func readMergedSettingsMap() map[string]any {
 	return res
 }
 
-// readRawSettingsJSON returns formatted settings.json file content as string.
-func readRawSettingsJSON() string {
+// ReadRawJSON returns formatted settings.json file content as string.
+func ReadRawJSON() string {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 
-	p := settingsPath()
+	p := Path()
 	if p == "" {
 		return "{}\n"
 	}
@@ -605,16 +611,16 @@ func readRawSettingsJSON() string {
 	return string(data)
 }
 
-// writeSettings saves the agent and models choices while preserving other settings.
-func writeSettings(s settings) error {
-	p := settingsPath()
+// Write saves the agent and models choices while preserving other settings.
+func Write(s Settings) error {
+	p := Path()
 	if p == "" {
 		return errors.New("no home directory to save settings in")
 	}
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 
-	raw := readSettingsRawMap()
+	raw := ReadRawMap()
 	if s.Agent != "" {
 		raw["agent"] = s.Agent
 		raw["agent.harness"] = s.Agent
@@ -634,16 +640,16 @@ func writeSettings(s settings) error {
 	return writeRawMapLocked(p, raw)
 }
 
-// updateSettingsMap merges key-value pairs into settings.json without losing existing keys.
-func updateSettingsMap(updates map[string]any) error {
-	p := settingsPath()
+// UpdateMap merges key-value pairs into settings.json without losing existing keys.
+func UpdateMap(updates map[string]any) error {
+	p := Path()
 	if p == "" {
 		return errors.New("no home directory to save settings in")
 	}
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 
-	raw := readSettingsRawMap()
+	raw := ReadRawMap()
 	for k, v := range updates {
 		if v == nil {
 			delete(raw, k)
@@ -716,14 +722,14 @@ func updateSettingsMap(updates map[string]any) error {
 	return writeRawMapLocked(p, raw)
 }
 
-// saveRawSettingsJSON parses and validates raw JSON text and writes it formatted.
-func saveRawSettingsJSON(rawJSON []byte) error {
+// SaveRawJSON parses and validates raw JSON text and writes it formatted.
+func SaveRawJSON(rawJSON []byte) error {
 	var m map[string]any
 	if err := json.Unmarshal(rawJSON, &m); err != nil {
 		return err
 	}
 
-	p := settingsPath()
+	p := Path()
 	if p == "" {
 		return errors.New("no home directory to save settings in")
 	}

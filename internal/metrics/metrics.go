@@ -61,20 +61,53 @@ func Collect(lspMem uint64, lspEnabled bool) ProcessMetrics {
 	return m
 }
 
+var cachedPageSize = func() uint64 {
+	ps := uint64(os.Getpagesize())
+	if ps == 0 {
+		ps = 4096
+	}
+	return ps
+}()
+
+func readStatmRSS(path string) (uint64, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	var buf [128]byte
+	n, _ := f.Read(buf[:])
+	f.Close()
+	if n <= 0 {
+		return 0, false
+	}
+	b := buf[:n]
+	i := 0
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n') {
+		i++
+	}
+	// Skip field 0 (total program size)
+	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+		i++
+	}
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t') {
+		i++
+	}
+	if i >= len(b) || b[i] < '0' || b[i] > '9' {
+		return 0, false
+	}
+	var pages uint64
+	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+		pages = pages*10 + uint64(b[i]-'0')
+		i++
+	}
+	return pages * cachedPageSize, true
+}
+
 // ReadProcessRSS returns resident set size of the current process in bytes.
 func ReadProcessRSS() uint64 {
-	// 1. Try Linux /proc/self/statm
-	if data, err := os.ReadFile("/proc/self/statm"); err == nil {
-		fields := strings.Fields(string(data))
-		if len(fields) >= 2 {
-			if pages, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
-				pageSize := uint64(os.Getpagesize())
-				if pageSize == 0 {
-					pageSize = 4096
-				}
-				return pages * pageSize
-			}
-		}
+	// 1. Try Linux /proc/self/statm (zero allocations)
+	if rss, ok := readStatmRSS("/proc/self/statm"); ok {
+		return rss
 	}
 
 	// 2. Try Darwin/BSD via ps for self PID
@@ -90,18 +123,8 @@ func ReadProcessRSS() uint64 {
 
 // ReadRSSForPID returns another process's resident set size in bytes.
 func ReadRSSForPID(pid int) uint64 {
-	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid)); err == nil {
-		fields := strings.Fields(string(data))
-		if len(fields) >= 2 {
-			if pages, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
-				pageSize := uint64(os.Getpagesize())
-				if pageSize == 0 {
-					pageSize = 4096
-				}
-				return pages * pageSize
-			}
-		}
-		return 0
+	if rss, ok := readStatmRSS("/proc/" + strconv.Itoa(pid) + "/statm"); ok {
+		return rss
 	}
 
 	// Non-Linux (darwin/bsd): shell out to ps

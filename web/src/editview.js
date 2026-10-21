@@ -16,20 +16,42 @@ export const btnSaveFile = $('#btn-save-file');
 export const btnCancelEdit = $('#btn-cancel-edit');
 
 let mirror = null;
+let lastGutterLineCount = -1;
+let lastGutterWrap = null;
+let gutterRAF = 0;
+
+export function scheduleUpdateGutter() {
+  if (gutterRAF) return;
+  gutterRAF = requestAnimationFrame(() => {
+    gutterRAF = 0;
+    updateGutter();
+  });
+}
 
 export function updateGutter() {
   if (!editTextarea || !editGutterEl) return;
   const text = editTextarea.value;
-  const lines = text.split('\n');
-  const lineCount = lines.length;
-  const digits = String(lineCount).length;
-  editGutterEl.style.width = Math.max(45, digits * (S.chW || 7.8) + 26) + 'px';
   if (!S.wrap) {
+    let lineCount = 1;
+    for (let i = 0; i < text.length; i++) {
+      if (text.charCodeAt(i) === 10) lineCount++;
+    }
+    if (lineCount === lastGutterLineCount && lastGutterWrap === false) return;
+    lastGutterLineCount = lineCount;
+    lastGutterWrap = false;
+    const digits = String(lineCount).length;
+    editGutterEl.style.width = Math.max(45, digits * (S.chW || 7.8) + 26) + 'px';
     let s = '';
     for (let i = 1; i <= lineCount; i++) s += i + '\n';
     editGutterEl.textContent = s;
     return;
   }
+  const lines = text.split('\n');
+  const lineCount = lines.length;
+  const digits = String(lineCount).length;
+  editGutterEl.style.width = Math.max(45, digits * (S.chW || 7.8) + 26) + 'px';
+  lastGutterLineCount = lineCount;
+  lastGutterWrap = true;
   // Wrapped lines span several visual rows: measure each in a hidden mirror
   // laid out like the textarea and size the matching gutter number to it.
   if (!mirror) {
@@ -39,27 +61,40 @@ export function updateGutter() {
     editTextarea.parentElement.appendChild(mirror);
   }
   mirror.style.width = editTextarea.clientWidth + 'px';
-  mirror.textContent = '';
-  const frag = document.createDocumentFragment();
-  for (const l of lines) {
-    const row = document.createElement('div');
-    row.textContent = l || ' ';
-    frag.appendChild(row);
+  const mRows = mirror.children;
+  while (mRows.length > lineCount) mirror.lastElementChild.remove();
+  if (mRows.length < lineCount) {
+    const frag = document.createDocumentFragment();
+    for (let i = mRows.length; i < lineCount; i++) {
+      frag.appendChild(document.createElement('div'));
+    }
+    mirror.appendChild(frag);
   }
-  mirror.appendChild(frag);
-  const rows = mirror.children;
-  const heights = new Array(lineCount);
-  for (let i = 0; i < lineCount; i++) heights[i] = rows[i].offsetHeight;
-  mirror.textContent = '';
-  const out = document.createDocumentFragment();
   for (let i = 0; i < lineCount; i++) {
-    const n = document.createElement('div');
-    n.textContent = i + 1;
-    n.style.height = heights[i] + 'px';
-    out.appendChild(n);
+    const want = lines[i] || ' ';
+    if (mRows[i].textContent !== want) mRows[i].textContent = want;
   }
-  editGutterEl.textContent = '';
-  editGutterEl.appendChild(out);
+  const heights = new Array(lineCount);
+  for (let i = 0; i < lineCount; i++) heights[i] = mRows[i].offsetHeight;
+
+  if (editGutterEl.childElementCount === 0 && editGutterEl.textContent) {
+    editGutterEl.textContent = '';
+  }
+  const gRows = editGutterEl.children;
+  while (gRows.length > lineCount) editGutterEl.lastElementChild.remove();
+  if (gRows.length < lineCount) {
+    const out = document.createDocumentFragment();
+    for (let i = gRows.length; i < lineCount; i++) {
+      const n = document.createElement('div');
+      n.textContent = String(i + 1);
+      out.appendChild(n);
+    }
+    editGutterEl.appendChild(out);
+  }
+  for (let i = 0; i < lineCount; i++) {
+    const h = heights[i] + 'px';
+    if (gRows[i].style.height !== h) gRows[i].style.height = h;
+  }
 }
 
 // The doc whose text is currently in the textarea; lets any tab switch path
@@ -258,7 +293,14 @@ export function initEditView() {
     if (S.wrap && w && w !== lastW && !editViewEl.hidden) updateGutter();
     lastW = w;
   }).observe(editTextarea);
+  let lastWrapClass = document.body.classList.contains('word-wrap');
+  let lastHideLinesClass = document.body.classList.contains('hide-lines');
   new MutationObserver(() => {
+    const wrapClass = document.body.classList.contains('word-wrap');
+    const hideLinesClass = document.body.classList.contains('hide-lines');
+    if (wrapClass === lastWrapClass && hideLinesClass === lastHideLinesClass) return;
+    lastWrapClass = wrapClass;
+    lastHideLinesClass = hideLinesClass;
     if (!editViewEl.hidden) updateGutter();
   }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
@@ -276,7 +318,8 @@ export function initEditView() {
         drawTabs();
       }
     }
-    updateGutter();
+    if (S.wrap) scheduleUpdateGutter();
+    else updateGutter();
   });
 
   editTextarea.addEventListener('keydown', e => {

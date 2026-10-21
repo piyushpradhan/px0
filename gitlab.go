@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"px0/internal/settings"
 )
 
 // gitlab.go talks to the GitLab REST API (v4) for merge request review via
@@ -114,7 +116,7 @@ func (g *GitLabProvider) GitAuth(target PRTarget, token string) gitAuth {
 // GITLAB_HOST (glab's own convention), else gitlab.com. A merge request URL
 // can name any host, and a token must never reach one it wasn't issued by.
 func gitlabTokenHost() string {
-	cfg := readSettings()
+	cfg := settings.Read()
 	h := ""
 	if cfg.GitLabHost != nil {
 		h = strings.TrimSpace(*cfg.GitLabHost)
@@ -128,7 +130,7 @@ func gitlabTokenHost() string {
 // ResolveToken looks, in order, for the gitlab.token setting and then
 // GITLAB_TOKEN (both only for gitlabTokenHost), then glab's stored token for
 // the target's own host. Empty means the review stays read-only.
-func (g *GitLabProvider) ResolveToken(cfg settings, target PRTarget) (token, source string) {
+func (g *GitLabProvider) ResolveToken(cfg settings.Settings, target PRTarget) (token, source string) {
 	host := target.Host
 	if host == "" {
 		host = "gitlab.com"

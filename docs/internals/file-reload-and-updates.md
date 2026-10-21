@@ -111,18 +111,19 @@ if (activeDoc) {
 
 ### Step 2: Virtualized Chunk Target Calculation
 
-Instead of fetching entire files, px0 leverages its windowed virtualization architecture (`CHUNK = 1000` lines):
+Instead of fetching entire files, px0 leverages its windowed virtualization architecture (`CHUNK = 1000` lines). By default, `reloadOpenTabs()` refreshes the currently active tab immediately and marks background tabs `_stale = true` so they reload lazily when activated (passing `{ all: true }` refreshes every open tab at once):
 
 ```javascript
-const targets = S.tabs.map(t => ({
-  oldDoc: t,
-  path: t.path,
-  anchor: t.cur || 1,
-  start: t.cur ? Math.max(0, Math.floor((t.cur - 1) / CHUNK) * CHUNK) : 0,
-}));
+const tabsToReload = opts.all
+  ? S.tabs
+  : S.tabs.filter((t, i) => {
+      if (i === S.active) return true;
+      if (!t.diffRef && !t.isEditing && !t.dirty) t._stale = true;
+      return false;
+    });
 ```
 
-- Each tab's current viewing line (`t.cur`) acts as the anchor.
+- Each targeted tab's current viewing line (`t.cur`) acts as the anchor.
 - px0 calculates the precise 1000-line chunk boundary enclosing that anchor:
   $$\text{start} = \left\lfloor \frac{\text{cur} - 1}{\text{CHUNK}} \right\rfloor \times \text{CHUNK}$$
 - Offscreen chunks are not requested upfront; they load on-demand when scrolled into view via `ensureChunk()`.

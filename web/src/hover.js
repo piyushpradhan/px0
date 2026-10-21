@@ -1,7 +1,7 @@
 // web/src/hover.js
 import { $, esc, S, doc_, api, isMac, MOD, withKeys } from './state.js';
 import { vp, editor, copyToClipboard } from './ui.js';
-import { paint } from './renderer.js';
+import { updateLinkDecoration } from './renderer.js';
 import { setLspState } from './status.js';
 import { wordAtPoint } from './cursor.js';
 import { gotoDefinition, findReferences } from './lsp.js';
@@ -35,7 +35,7 @@ export function onMove({ x, y, mod }) {
       S.link = at;
       vp.classList.toggle('linking', !!at);
       if (diffview) diffview.classList.toggle('linking', !!at);
-      paint();
+      updateLinkDecoration();
     }
     clearTimeout(hoverTimer);
     hideHover();
@@ -46,7 +46,7 @@ export function onMove({ x, y, mod }) {
     S.link = null;
     vp.classList.remove('linking');
     if (diffview) diffview.classList.remove('linking');
-    paint();
+    updateLinkDecoration();
   }
 
   // An open card is the keeper's business; moving under it must not re-arm a
@@ -179,7 +179,7 @@ export function clearLink() {
     S.link = null;
     vp.classList.remove('linking');
     if (diffview) diffview.classList.remove('linking');
-    paint();
+    updateLinkDecoration();
   }
 }
 

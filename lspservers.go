@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"px0/internal/metrics"
 )
 
 // lspServerDef describes one language server we know how to drive. Nothing here
@@ -412,7 +414,7 @@ func (m *lspManager) memBytes() uint64 {
 
 	var total uint64
 	for _, pid := range pids {
-		total += readRSSForPID(pid)
+		total += metrics.ReadRSSForPID(pid)
 	}
 	return total
 }
@@ -927,7 +929,7 @@ func (m *lspManager) ServerStatus(def *lspServerDef) map[string]any {
 		if c.cmd != nil && c.cmd.Process != nil {
 			pid := c.cmd.Process.Pid
 			res["pid"] = pid
-			res["memBytes"] = readRSSForPID(pid)
+			res["memBytes"] = metrics.ReadRSSForPID(pid)
 		}
 		return res
 	}

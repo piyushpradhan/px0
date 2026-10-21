@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"px0/internal/settings"
 )
 
 // github.go talks to the GitHub REST API for PR review (pr.go) via the
@@ -89,7 +91,7 @@ func (g *GitHubProvider) GitAuth(target PRTarget, token string) gitAuth {
 	return basicGitAuth("github.com", "x-access-token", token)
 }
 
-func (g *GitHubProvider) ResolveToken(cfg settings, target PRTarget) (token, source string) {
+func (g *GitHubProvider) ResolveToken(cfg settings.Settings, target PRTarget) (token, source string) {
 	return resolveGitHubToken(cfg)
 }
 
@@ -128,7 +130,7 @@ func (g *GitHubProvider) Merge(ctx context.Context, target PRTarget, token strin
 // resolveGitHubToken looks for a token in order: the explicit px0 setting
 // (github.token), the GITHUB_TOKEN environment variable, GH_TOKEN, then the gh CLI
 // if installed and logged in. An empty return means PR review stays read-only.
-func resolveGitHubToken(cfg settings) (token, source string) {
+func resolveGitHubToken(cfg settings.Settings) (token, source string) {
 	if cfg.GitHubToken != nil {
 		if t := strings.TrimSpace(*cfg.GitHubToken); t != "" {
 			return t, "settings"

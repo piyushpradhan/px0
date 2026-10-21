@@ -531,18 +531,30 @@ function thrOpenStream(id) {
     thr.cur = JSON.parse(e.data);
     thrRenderState();
   });
+  let deltaRAF = 0;
+  const dirtyTurns = new Set();
   es.addEventListener('delta', e => {
     if (thr.threadEs !== es || !thr.cur) return;
     const d = JSON.parse(e.data);
     const turn = thr.cur.turns.find(x => x.id === d.turn);
     if (!turn) return;
     turn.reply = (turn.reply || '') + d.text;
-    const body = thrEl.msgs.querySelector('.thr-agent[data-turn="' + d.turn + '"] .thr-reply');
-    if (!body) return;
-    const box = thrEl.msgs;
-    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-    body.innerHTML = thrMd(turn.reply);
-    if (stick) box.scrollTop = box.scrollHeight;
+    dirtyTurns.add(d.turn);
+    if (deltaRAF) return;
+    deltaRAF = requestAnimationFrame(() => {
+      deltaRAF = 0;
+      if (thr.threadEs !== es || !thr.cur) return;
+      const box = thrEl.msgs;
+      const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+      for (const turnId of dirtyTurns) {
+        const t = thr.cur.turns.find(x => x.id === turnId);
+        if (!t) continue;
+        const body = box.querySelector('.thr-agent[data-turn="' + turnId + '"] .thr-reply');
+        if (body) body.innerHTML = thrMd(t.reply);
+      }
+      dirtyTurns.clear();
+      if (stick) box.scrollTop = box.scrollHeight;
+    });
   });
   es.addEventListener('tool', e => {
     if (thr.threadEs !== es || !thr.cur) return;

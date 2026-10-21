@@ -459,11 +459,16 @@ const FIT_STEPS = 6, FIT_SLACK = 16;
 const statusEl = $('#status');
 const growEl = $('.grow', statusEl);
 let fitLevel = 0;
+let appliedFit = -1;
+let fitRAF = 0;
 
 /* Apply fit level n and return the room left: the .grow spacer's width, or the
    overflow as a negative number. */
 function applyFit(n) {
-  for (let i = 1; i <= FIT_STEPS; i++) statusEl.classList.toggle('fit-' + i, i <= n);
+  if (n !== appliedFit) {
+    for (let i = 1; i <= FIT_STEPS; i++) statusEl.classList.toggle('fit-' + i, i <= n);
+    appliedFit = n;
+  }
   return growEl.offsetWidth - (statusEl.scrollWidth - statusEl.clientWidth);
 }
 
@@ -478,11 +483,19 @@ export function fitStatus() {
   }
 }
 
+function scheduleFitStatus() {
+  if (fitRAF) return;
+  fitRAF = requestAnimationFrame(() => {
+    fitRAF = 0;
+    fitStatus();
+  });
+}
+
 export function initStatusFit() {
   // Width changes come from the window and the sidebar resizers; content changes
   // from metrics, LSP state and the selection bar. Class changes are not observed,
   // so fitStatus() toggling them cannot re-trigger itself.
   new ResizeObserver(fitStatus).observe(statusEl);
-  new MutationObserver(fitStatus).observe(statusEl, { childList: true, subtree: true, characterData: true });
+  new MutationObserver(scheduleFitStatus).observe(statusEl, { childList: true, subtree: true, characterData: true });
   document.fonts?.ready.then(fitStatus);
 }

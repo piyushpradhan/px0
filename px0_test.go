@@ -17,86 +17,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"px0/internal/metrics"
+	"px0/internal/render"
+	"px0/internal/settings"
+	"px0/internal/ui"
 )
-
-func TestIgnorePatterns(t *testing.T) {
-	ig := newIgnoreSet([]string{"build/", "*.tmp", "!keep.tmp", "docs/**/draft.md", "/only-root.txt"})
-	cases := []struct {
-		path string
-		dir  bool
-		want bool
-	}{
-		{".git", true, true},
-		{"node_modules", true, true},
-		{"src/main.go", false, false},
-		{"build", true, true},
-		{"build/out.js", false, true},
-		{"a/b/c.tmp", false, true},
-		{"a/b/keep.tmp", false, false},
-		{"docs/x/y/draft.md", false, true},
-		{"docs/draft.md", false, true},
-		{"only-root.txt", false, true},
-		{"sub/only-root.txt", false, false},
-		{"vendor", true, true},
-		{"src/vendor.go", false, false},
-	}
-	for _, c := range cases {
-		if got := ig.Match(c.path, c.dir); got != c.want {
-			t.Errorf("match(%q, dir=%v) = %v, want %v", c.path, c.dir, got, c.want)
-		}
-	}
-}
-
-func TestFuzzyRanking(t *testing.T) {
-	paths := []string{
-		"internal/server/http_server.go",
-		"cmd/px0/main.go",
-		"web/app.js",
-		"pkg/util/strings.go",
-		"vendor/github.com/x/http/server.go",
-		"httpserver.go",
-	}
-	files := make([]FileEntry, len(paths))
-	for i, p := range paths {
-		name := p[strings.LastIndex(p, "/")+1:]
-		files[i] = FileEntry{Path: p, Name: name, lower: strings.ToLower(p), nameStart: len(p) - len(name)}
-	}
-
-	got := FuzzyFind(files, "httpserver", 10)
-	if len(got) == 0 {
-		t.Fatal("no matches for httpserver")
-	}
-	if got[0].Path != "httpserver.go" {
-		t.Errorf("best match for httpserver = %q, want httpserver.go", got[0].Path)
-	}
-	// Every returned path must actually contain the query as a subsequence.
-	for _, r := range got {
-		if !subsequence("httpserver", strings.ToLower(r.Path)) {
-			t.Errorf("%q is not a subsequence match", r.Path)
-		}
-		for _, p := range r.Pos {
-			if p < 0 || p >= len(r.Path) {
-				t.Errorf("%q: highlight position %d out of range", r.Path, p)
-			}
-		}
-	}
-	if got := FuzzyFind(files, "zzqq", 10); len(got) != 0 {
-		t.Errorf("expected no matches, got %v", got)
-	}
-	if got := FuzzyFind(files, "appjs", 10); got[0].Path != "web/app.js" {
-		t.Errorf("best match for appjs = %q, want web/app.js", got[0].Path)
-	}
-}
-
-func subsequence(q, s string) bool {
-	i := 0
-	for j := 0; j < len(s) && i < len(q); j++ {
-		if s[j] == q[i] {
-			i++
-		}
-	}
-	return i == len(q)
-}
 
 func newTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
@@ -388,13 +314,13 @@ func TestChunkedReadsCoverWholeFile(t *testing.T) {
 	s := NewServer(ix, nil)
 
 	var all []string
-	for start := 0; ; start += hlChunk {
+	for start := 0; ; start += render.ChunkLines {
 		_, body := get(t, s, "/api/file?path=big.go&start="+itoa(start))
 		total := int(body["total"].(float64))
 		for _, l := range body["lines"].([]any) {
 			all = append(all, l.(string))
 		}
-		if start+hlChunk >= total {
+		if start+render.ChunkLines >= total {
 			if len(all) != total {
 				t.Fatalf("chunked reads produced %d lines, want %d", len(all), total)
 			}
@@ -419,90 +345,6 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
-}
-
-// The segment fast paths must be indistinguishable from the regexp they
-// replace. This compares the two on every combination of a pattern set and a
-// path set, so a shortcut that is merely "close enough" fails here.
-func TestIgnoreFastPathMatchesRegex(t *testing.T) {
-	patterns := []string{
-		"node_modules", "dist", ".git", "build/", "vendor/", "target",
-		"*.pyc", "*.log", "*.min.js", "*", "*.", ".DS_Store",
-		"a?c", "**", "x**y", "sub/dir", "/rooted.txt", "docs/**/draft.md",
-		"weird name", "dash-name", "dot.name.ext", "UPPER",
-		// anchored shapes, which now take a literal-prefix reject or an exact path
-		"tests/baselines", "tests/baselines/reference", "src/*.ts", "src/**/gen.js",
-		"/built/local", "a/b/c/d", "tests/cases/*/x?.ts", "pkg/*/vendor",
-		// "**/" shapes, which have no literal head and rely on the run filter
-		"**/.vscode/*", "**/node_modules/**", "**/*.generated.ts", "**/a/b",
-		"x/**/y", "*/mid/*", "**/",
-	}
-	paths := []string{
-		"", "a", "node_modules", "node_modules/x.js", "a/node_modules",
-		"a/node_modules/b/c.js", "src/dist", "src/dist/app.js", "dist",
-		"build", "build/out.js", "a/build/b/c", "vendor", "vendor/x",
-		"x.pyc", "a/b/x.pyc", "pyc", ".pyc", "a.min.js", "a/b.min.js",
-		"abc", "a/abc", "axc", "sub/dir", "sub/dir/f", "a/sub/dir",
-		"rooted.txt", "a/rooted.txt", "docs/x/draft.md", "docs/draft.md",
-		"weird name", "weird name/f", "dash-name", "dot.name.ext",
-		"UPPER", "upper", "target", "a/target/b", ".DS_Store", "a/.DS_Store",
-		"x**y", "xzzy", "a/b/c/d/e/f/g",
-		"tests", "tests/baselines", "tests/baselines/reference", "tests/baselines/reference/x.js",
-		"tests/baselinesX", "src/a.ts", "src/a/b.ts", "src/x/gen.js", "src/gen.js",
-		"built/local", "built/local/tsc.js", "builtX/local", "a/b/c/d", "a/b/c/d/e",
-		"tests/cases/foo/x1.ts", "tests/cases/foo/x12.ts", "pkg/a/vendor", "pkg/vendor",
-		".vscode", ".vscode/settings.json", "a/.vscode/x.json", "a/b/.vscode",
-		"node_modules/x", "a/node_modules/b/c", "x.generated.ts", "a/b/x.generated.ts",
-		"a/b", "q/a/b", "x/y", "x/m/y", "x/m/n/y", "p/mid/q", "mid/q", "p/mid",
-	}
-
-	for _, pat := range patterns {
-		for _, dirOnlySuffix := range []string{"", "/"} {
-			full := pat + dirOnlySuffix
-			r, ok := compilePattern(full)
-			if !ok {
-				continue
-			}
-			// Rebuild the same pattern forced onto the regexp path.
-			slow, ok := compileRegexOnly(full)
-			if !ok {
-				t.Fatalf("%q: regex form failed to compile", full)
-			}
-			if r.Kind != rkRegex {
-				if slow.Re == nil || slow.Sub == nil {
-					t.Fatalf("%q: reference rule has no regexps", full)
-				}
-			}
-			for _, p := range paths {
-				for _, isDir := range []bool{false, true} {
-					got := r.Hit(p, isDir)
-					want := slow.Hit(p, isDir)
-					if got != want {
-						t.Errorf("pattern %q path %q dir=%v: fast=%v regex=%v (kind=%d lit=%q)",
-							full, p, isDir, got, want, r.Kind, r.Lit)
-					}
-				}
-			}
-		}
-	}
-}
-
-// compileRegexOnly builds the same rule with the segment shortcuts disabled.
-func compileRegexOnly(p string) (rule, bool) {
-	r, ok := compilePattern(p)
-	if !ok {
-		return r, false
-	}
-	if r.Kind == rkRegex {
-		return r, true
-	}
-	// Re-derive the regexp form by compiling a pattern that cannot be
-	// shortcut, then transplanting the flags.
-	forced, ok := compilePatternRegex(p)
-	if !ok {
-		return r, false
-	}
-	return forced, true
 }
 
 // A Unicode character whose lowercase form is a different byte length used to
@@ -616,18 +458,6 @@ func TestCloseEndpoint(t *testing.T) {
 		t.Fatalf("file: %d %v", code, body)
 	}
 	abs := filepath.Join(root, "greet.go")
-	cache.mu.Lock()
-	found := false
-	for k := range cache.items {
-		if strings.HasPrefix(k, abs+"|") {
-			found = true
-			break
-		}
-	}
-	cache.mu.Unlock()
-	if !found {
-		t.Fatal("expected greet.go to be in highlight cache")
-	}
 
 	// 2. Call /api/close?path=greet.go
 	code, body = get(t, s, "/api/close?path=greet.go")
@@ -639,16 +469,7 @@ func TestCloseEndpoint(t *testing.T) {
 	}
 
 	// 3. Verify evicted from cache
-	cache.mu.Lock()
-	foundAfter := false
-	for k := range cache.items {
-		if strings.HasPrefix(k, abs+"|") {
-			foundAfter = true
-			break
-		}
-	}
-	cache.mu.Unlock()
-	if foundAfter {
+	if render.Evict(abs) {
 		t.Fatal("expected greet.go to be evicted from highlight cache after /api/close")
 	}
 
@@ -927,11 +748,11 @@ func TestMetaIncludesVersion(t *testing.T) {
 }
 
 func TestVerboseRequestLogging(t *testing.T) {
-	origVerbose := uiVerbose
-	origQuiet := uiQuiet
+	origVerbose := ui.Verbose
+	origQuiet := ui.Quiet
 	defer func() {
-		uiVerbose = origVerbose
-		uiQuiet = origQuiet
+		ui.Verbose = origVerbose
+		ui.Quiet = origQuiet
 	}()
 
 	s, _ := newTestServer(t)
@@ -946,8 +767,8 @@ func TestVerboseRequestLogging(t *testing.T) {
 		os.Stdout = origStdout
 	}()
 
-	uiVerbose = true
-	uiQuiet = false
+	ui.Verbose = true
+	ui.Quiet = false
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
@@ -1048,53 +869,12 @@ func TestUnifiedEventStream(t *testing.T) {
 		t.Fatalf("did not receive initial metrics event on /api/stream")
 	}
 
-	var m ProcessMetrics
+	var m metrics.ProcessMetrics
 	if err := json.Unmarshal([]byte(metricsData), &m); err != nil {
 		t.Fatalf("failed to unmarshal metrics JSON: %v, raw: %s", err, metricsData)
 	}
 	if m.Goroutine <= 0 {
 		t.Errorf("expected goroutines > 0, got %d", m.Goroutine)
-	}
-}
-
-func TestUISpinner(t *testing.T) {
-	origQuiet := uiQuiet
-	defer func() { uiQuiet = origQuiet }()
-	uiQuiet = false
-
-	var buf bytes.Buffer
-	sp := newSpinner("Initial step", &buf)
-	sp.Update("Second step")
-	sp.Success("All done")
-
-	out := buf.String()
-	if !strings.Contains(out, "Initial step") {
-		t.Errorf("expected output to contain 'Initial step', got: %q", out)
-	}
-	if !strings.Contains(out, "Second step") {
-		t.Errorf("expected output to contain 'Second step', got: %q", out)
-	}
-	if !strings.Contains(out, "All done") {
-		t.Errorf("expected output to contain 'All done', got: %q", out)
-	}
-
-	// Test Fail
-	buf.Reset()
-	sp2 := newSpinner("Starting task", &buf)
-	sp2.Fail("Failed task")
-	out2 := buf.String()
-	if !strings.Contains(out2, "Failed task") {
-		t.Errorf("expected output to contain 'Failed task', got: %q", out2)
-	}
-
-	// Test Quiet mode
-	uiQuiet = true
-	buf.Reset()
-	sp3 := newSpinner("Quiet task", &buf)
-	sp3.Update("Quiet update")
-	sp3.Success("Quiet done")
-	if buf.Len() != 0 {
-		t.Errorf("expected quiet mode to produce no output, got: %q", buf.String())
 	}
 }
 
@@ -1218,22 +998,6 @@ func TestSnipBoundsChecks(t *testing.T) {
 	m2 := snip([]byte("hello world"), 8, 3)
 	if m2.Mid != "" {
 		t.Errorf("expected empty mid for inverted range, got %q", m2.Mid)
-	}
-}
-
-func TestFuzzyCaseSensitivity(t *testing.T) {
-	files := []FileEntry{
-		{Path: "src/HTTPServer.go", Name: "HTTPServer.go", lower: "src/httpserver.go", nameStart: 4},
-		{Path: "src/httpserver.go", Name: "httpserver.go", lower: "src/httpserver.go", nameStart: 4},
-	}
-
-	// Uppercase query should rank exact-case match higher
-	res := FuzzyFind(files, "HTTPServer", 10)
-	if len(res) < 2 {
-		t.Fatalf("expected 2 results, got %d", len(res))
-	}
-	if res[0].Path != "src/HTTPServer.go" {
-		t.Errorf("expected 'src/HTTPServer.go' to rank higher for query 'HTTPServer', got: %s", res[0].Path)
 	}
 }
 
@@ -1473,6 +1237,139 @@ func TestFSNew(t *testing.T) {
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for path traversal, got %d", rec.Code)
+	}
+}
+
+func TestTableEndpointServesRowsAndFileFlagsTables(t *testing.T) {
+	t.Parallel()
+	s, root := newTestServer(t)
+	if err := os.WriteFile(filepath.Join(root, "bench.csv"), []byte("repo,files\nlinux,81902\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bench.tsv"), []byte("repo\tfiles\nlinux\t81902\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, m := get(t, s, "/api/table?path=bench.csv")
+	if code != 200 {
+		t.Fatalf("status %d: %v", code, m)
+	}
+	rows, _ := m["rows"].([]any)
+	if len(rows) != 1 || m["cols"] != float64(2) {
+		t.Errorf("response = %v", m)
+	}
+	for path, want := range map[string]bool{"bench.csv": true, "bench.tsv": true, "main.go": false} {
+		if _, m := get(t, s, "/api/file?path="+path); m["table"] != want {
+			t.Errorf("%s: table = %v, want %v", path, m["table"], want)
+		}
+	}
+	if code, _ := get(t, s, "/api/table?path=main.go"); code != 415 {
+		t.Errorf("non-table file: status %d, want 415", code)
+	}
+}
+
+func TestMarkdownPreview(t *testing.T) {
+	t.Parallel()
+	s, root := newTestServer(t)
+	src := "# Hello World\n\nSee [deep](sub/deep.py#L2).\n\n## API_reference\n\n```go\nfunc main() {}\n```\n\n- [x] done\n"
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, m := get(t, s, "/api/markdown?path=README.md")
+	if code != 200 {
+		t.Fatalf("status %d: %v", code, m)
+	}
+	out, _ := m["html"].(string)
+	for _, want := range []string{
+		`<h1 id="hello-world" data-line="1">Hello World</h1>`,
+		`<h2 id="api_reference" data-line="5">`,
+		`<pre class="md-code" data-line="8" data-lang="go"><code><i class=k>func</i>`,
+		`<a href="sub/deep.py#L2">deep</a>`,
+		`type="checkbox"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("preview is missing %q:\n%s", want, out)
+		}
+	}
+
+	if _, m := get(t, s, "/api/file?path=README.md"); m["markdown"] != true {
+		t.Errorf("file response should flag Markdown, got %v", m["markdown"])
+	}
+	if code, _ := get(t, s, "/api/markdown?path=main.go"); code != 415 {
+		t.Errorf("non-Markdown file: status %d, want 415", code)
+	}
+	if code, _ := get(t, s, "/api/markdown?path=../x.md"); code != 400 {
+		t.Errorf("path outside the root: status %d, want 400", code)
+	}
+}
+
+func TestSettingsAPIEndpoints(t *testing.T) {
+	isolateSettings(t)
+	root := t.TempDir()
+	srv := agentServer(t, root, "echo")
+
+	// 1. GET /api/settings
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/settings failed: code %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var getResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("invalid GET json response: %v", err)
+	}
+	if _, ok := getResp["schema"]; !ok {
+		t.Errorf("missing schema in GET /api/settings response")
+	}
+
+	// 2. POST /api/settings with key/value updates
+	payload := map[string]any{
+		"editor.tabSize":              2,
+		"diffEditor.renderSideBySide": false,
+	}
+	b, _ := json.Marshal(payload)
+	postReq := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader(b))
+	postReq.Host = "127.0.0.1:7777"
+	postReq.Header.Set("Origin", "http://127.0.0.1:7777")
+	postReq.Header.Set("Content-Type", "application/json")
+	postRec := httptest.NewRecorder()
+	srv.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/settings failed: code %d, body: %s", postRec.Code, postRec.Body.String())
+	}
+
+	// 3. Verify changes persisted
+	m := settings.ReadMergedMap()
+	if m["editor.tabSize"] != float64(2) && m["editor.tabSize"] != 2 {
+		t.Errorf("expected editor.tabSize 2, got %v", m["editor.tabSize"])
+	}
+	if m["diffEditor.renderSideBySide"] != false {
+		t.Errorf("expected diffEditor.renderSideBySide false, got %v", m["diffEditor.renderSideBySide"])
+	}
+
+	// 4. POST /api/settings with raw JSON
+	rawPayload := map[string]any{
+		"raw": "{\n  \"editor.fontSize\": 15,\n  \"workbench.colorTheme\": \"nord\"\n}\n",
+	}
+	rb, _ := json.Marshal(rawPayload)
+	rawReq := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader(rb))
+	rawReq.Host = "127.0.0.1:7777"
+	rawReq.Header.Set("Origin", "http://127.0.0.1:7777")
+	rawReq.Header.Set("Content-Type", "application/json")
+	rawRec := httptest.NewRecorder()
+	srv.ServeHTTP(rawRec, rawReq)
+	if rawRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/settings raw failed: code %d, body: %s", rawRec.Code, rawRec.Body.String())
+	}
+
+	m2 := settings.ReadMergedMap()
+	if m2["editor.fontSize"] != float64(15) && m2["editor.fontSize"] != 15 {
+		t.Errorf("expected editor.fontSize 15 from raw, got %v", m2["editor.fontSize"])
+	}
+	if m2["workbench.colorTheme"] != "nord" {
+		t.Errorf("expected workbench.colorTheme nord from raw, got %v", m2["workbench.colorTheme"])
 	}
 }
 

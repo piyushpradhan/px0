@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"px0/internal/settings"
 )
 
 // Every URL shape routes to exactly its own provider.
@@ -53,14 +55,14 @@ func TestGiteaTokenScopedToHost(t *testing.T) {
 	t.Setenv("GITEA_HOST", "")
 	t.Setenv("GITEA_TOKEN", "envtok")
 	g := &GiteaProvider{}
-	if tok, _ := g.ResolveToken(settings{}, PRTarget{Host: "codeberg.org"}); tok != "envtok" {
+	if tok, _ := g.ResolveToken(settings.Settings{}, PRTarget{Host: "codeberg.org"}); tok != "envtok" {
 		t.Errorf("codeberg default: %q", tok)
 	}
-	if tok, _ := g.ResolveToken(settings{}, PRTarget{Host: "evil.example"}); tok != "" {
+	if tok, _ := g.ResolveToken(settings.Settings{}, PRTarget{Host: "evil.example"}); tok != "" {
 		t.Errorf("token leaked to another host: %q", tok)
 	}
 	host, tok := "https://git.corp.example/", "settok"
-	cfg := settings{GiteaHost: &host, GiteaToken: &tok}
+	cfg := settings.Settings{GiteaHost: &host, GiteaToken: &tok}
 	if got, src := g.ResolveToken(cfg, PRTarget{Host: "git.corp.example"}); got != "settok" || src != "settings" {
 		t.Errorf("configured host: %q/%q", got, src)
 	}

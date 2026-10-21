@@ -1,4 +1,4 @@
-package main
+package telemetry
 
 import (
 	"bytes"
@@ -15,10 +15,6 @@ import (
 	"time"
 )
 
-// posthogKey can be injected at compile time:
-// go build -ldflags="-X main.posthogKey=phc_..."
-var posthogKey string
-
 const (
 	defaultPostHogHost = "https://us.i.posthog.com"
 	telemetryQueueSize = 128
@@ -29,13 +25,14 @@ type telemetryEvent struct {
 	Properties map[string]any `json:"properties"`
 }
 
-// TelemetryService provides non-blocking, anonymous usage telemetry.
+// Service provides non-blocking, anonymous usage telemetry.
 // Events are buffered in a queue and sent asynchronously to prevent delaying startup or UI responsiveness.
 // No file names, code contents, commit messages, or personal identifiable information are ever collected.
-type TelemetryService struct {
+type Service struct {
 	enabled    bool
 	apiKey     string
 	host       string
+	version    string
 	distinctID string
 	sessionID  string
 	startTime  time.Time
@@ -64,9 +61,9 @@ func isOptedOut(flagNoTelemetry bool) bool {
 	return false
 }
 
-// filesBucket maps file count to coarse size tiers to preserve privacy
+// FilesBucket maps file count to coarse size tiers to preserve privacy
 // while enabling meaningful monorepo vs small project analysis.
-func filesBucket(n int) string {
+func FilesBucket(n int) string {
 	switch {
 	case n >= 100000:
 		return ">100k"
@@ -127,9 +124,9 @@ func generateUUID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// NewTelemetryService creates and starts a background telemetry worker.
-func NewTelemetryService(flagNoTelemetry bool) *TelemetryService {
-	key := strings.TrimSpace(posthogKey)
+// New creates and starts a background telemetry worker.
+func New(defaultKey, version string, flagNoTelemetry bool) *Service {
+	key := strings.TrimSpace(defaultKey)
 	if envKey := strings.TrimSpace(os.Getenv("PX0_POSTHOG_KEY")); envKey != "" {
 		key = envKey
 	}
@@ -141,10 +138,11 @@ func NewTelemetryService(flagNoTelemetry bool) *TelemetryService {
 
 	enabled := key != "" && !isOptedOut(flagNoTelemetry)
 
-	t := &TelemetryService{
+	t := &Service{
 		enabled:    enabled,
 		apiKey:     key,
 		host:       host,
+		version:    version,
 		distinctID: getOrGenerateDistinctID(),
 		sessionID:  generateUUID(),
 		startTime:  time.Now(),
@@ -165,7 +163,7 @@ func NewTelemetryService(flagNoTelemetry bool) *TelemetryService {
 
 // Track enqueues an event to be dispatched asynchronously.
 // If telemetry is disabled or queue is full, it drops immediately without blocking.
-func (t *TelemetryService) Track(event string, props map[string]any) {
+func (t *Service) Track(event string, props map[string]any) {
 	if t == nil || !t.enabled {
 		return
 	}
@@ -178,7 +176,7 @@ func (t *TelemetryService) Track(event string, props map[string]any) {
 	props["distinct_id"] = t.distinctID
 	props["$session_id"] = t.sessionID
 	props["$lib"] = "px0"
-	props["$lib_version"] = version
+	props["$lib_version"] = t.version
 	props["$os"] = runtime.GOOS
 	props["$arch"] = runtime.GOARCH
 
@@ -196,7 +194,7 @@ func (t *TelemetryService) Track(event string, props map[string]any) {
 
 // Close emits session_ended and session_stopped with total active duration.
 // The stop event is dispatched synchronously so process exit cannot kill it before arrival.
-func (t *TelemetryService) Close(reason string) {
+func (t *Service) Close(reason string) {
 	if t == nil || !t.enabled {
 		return
 	}
@@ -215,7 +213,7 @@ func (t *TelemetryService) Close(reason string) {
 			"distinct_id":      t.distinctID,
 			"$session_id":      t.sessionID,
 			"$lib":             "px0",
-			"$lib_version":     version,
+			"$lib_version":     t.version,
 			"$os":              runtime.GOOS,
 			"$arch":            runtime.GOARCH,
 			"duration_seconds": durationSec,
@@ -233,7 +231,7 @@ func (t *TelemetryService) Close(reason string) {
 	})
 }
 
-func (t *TelemetryService) worker() {
+func (t *Service) worker() {
 	defer t.wg.Done()
 
 	for {
@@ -254,7 +252,7 @@ func (t *TelemetryService) worker() {
 	}
 }
 
-func (t *TelemetryService) send(evt telemetryEvent) {
+func (t *Service) send(evt telemetryEvent) {
 	debug := os.Getenv("PX0_TELEMETRY_DEBUG") == "1"
 
 	payload := map[string]any{
@@ -280,7 +278,7 @@ func (t *TelemetryService) send(evt telemetryEvent) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "px0/"+version)
+	req.Header.Set("User-Agent", "px0/"+t.version)
 
 	resp, err := t.client.Do(req)
 	if err != nil {

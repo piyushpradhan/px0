@@ -58,6 +58,8 @@ Each active language server is managed by an `lspClient` struct:
 - Requests are serialized through thread-safe channels.
 - Operations that exceed time budgets (e.g., hanging server queries) are bounded by contexts (`context.WithTimeout`).
 - Server initialization enforces a strict 30-second timeout.
+- Document synchronization (`ensureOpen`) checks `c.opened[uri]` under a read lock before reading from disk, avoiding redundant `os.ReadFile` calls on subsequent hover, definition, and reference queries.
+- Location responses (`locate`) decode single-object or array `Location` / `LocationLink` payloads from `json.RawMessage` in a single RPC call, and UTF-16 column conversion (`utf16ToByte` / `fromLSPLine`) operates directly on the target line (`d.Raw(line)`) without allocating full-file line slices.
 
 ## 4. External Path Boundary Sandboxing (`extAllowed`)
 

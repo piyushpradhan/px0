@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"embed"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"px0/internal/fuzzy"
+	"px0/internal/metrics"
+	"px0/internal/render"
+	"px0/internal/settings"
+	"px0/internal/symbols"
+	"px0/internal/table"
+	"px0/internal/telemetry"
+	"px0/internal/ui"
 )
 
 //go:embed web/index.html web/style.css web/themes web/vendor
@@ -55,8 +65,8 @@ func cleanBasePath(p string) string {
 type Server struct {
 	ix        *Index
 	lsp       *lspManager
-	tel       *TelemetryService // nil in tests; Track is nil-safe
-	agent     *agentManager     // nil unless main wires editing for this session
+	tel       *telemetry.Service // nil in tests; Track is nil-safe
+	agent     *agentManager      // nil unless main wires editing for this session
 	threads   *threadManager    // nil unless editing is wired: threads run on the same harness
 	pr        *prSession        // nil unless main launched this process as `px0 pr ...`
 	diffBase  string            // ref /api/diff and /api/gutter diff against; "HEAD" unless in PR mode
@@ -270,9 +280,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	rec := &statusRecorder{ResponseWriter: w}
-	if uiVerbose {
+	if ui.Verbose {
 		defer func() {
-			dur := fmtDuration(time.Since(start))
+			dur := ui.FmtDuration(time.Since(start))
 			status := rec.status
 			if status == 0 {
 				status = http.StatusOK
@@ -293,7 +303,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if uri == "" {
 				uri = "/"
 			}
-			uiStatus(role, "http", fmt.Sprintf("%s %s · %d  (%s)", r.Method, uri, status, dur), 0, os.Stdout)
+			ui.Status(role, "http", fmt.Sprintf("%s %s · %d  (%s)", r.Method, uri, status, dur), 0, os.Stdout)
 		}()
 	}
 
@@ -645,6 +655,8 @@ func (s *Server) agentHarnesses() []agentHarness {
 	return s.agent.Detect()
 }
 
+var baseHrefRe = regexp.MustCompile(`<base\s+href="[^"]*">`)
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	expected := s.BasePath()
 	if r.URL.Path != expected && r.URL.Path != strings.TrimSuffix(expected, "/") {
@@ -659,8 +671,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	html := string(b)
 	baseTag := fmt.Sprintf(`<base href="%s">`, expected)
 	if strings.Contains(html, "<base ") {
-		re := regexp.MustCompile(`<base\s+href="[^"]*">`)
-		html = re.ReplaceAllString(html, baseTag)
+		html = baseHrefRe.ReplaceAllString(html, baseTag)
 	} else if idx := strings.Index(html, "<head>"); idx != -1 {
 		html = html[:idx+6] + "\n" + baseTag + html[idx+6:]
 	} else {
@@ -670,27 +681,40 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, html)
 }
 
+var (
+	themesCSSOnce sync.Once
+	themesCSSBody string
+	themesCSSErr  error
+)
+
 // handleThemes joins web/themes/*.css into one stylesheet in file name order, so
 // adding a theme means adding a file: there is no list to keep in sync.
 func (s *Server) handleThemes(w http.ResponseWriter, r *http.Request) {
-	names, err := fs.Glob(assets, "web/themes/*.css")
-	if err != nil {
-		fail(w, 500, err.Error())
-		return
-	}
-	var css strings.Builder
-	for _, name := range names {
-		b, err := fs.ReadFile(assets, name)
+	themesCSSOnce.Do(func() {
+		names, err := fs.Glob(assets, "web/themes/*.css")
 		if err != nil {
-			fail(w, 500, err.Error())
+			themesCSSErr = err
 			return
 		}
-		css.WriteString("/* " + strings.TrimPrefix(name, "web/") + " */\n")
-		css.Write(b)
-		css.WriteString("\n")
+		var css strings.Builder
+		for _, name := range names {
+			b, err := fs.ReadFile(assets, name)
+			if err != nil {
+				themesCSSErr = err
+				return
+			}
+			css.WriteString("/* " + strings.TrimPrefix(name, "web/") + " */\n")
+			css.Write(b)
+			css.WriteString("\n")
+		}
+		themesCSSBody = css.String()
+	})
+	if themesCSSErr != nil {
+		fail(w, 500, themesCSSErr.Error())
+		return
 	}
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	io.WriteString(w, css.String())
+	io.WriteString(w, themesCSSBody)
 }
 
 func staticContentType(p string) string {
@@ -943,6 +967,13 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, meta)
 }
 
+func getProcessMetrics(lsp *lspManager) metrics.ProcessMetrics {
+	if lsp == nil {
+		return metrics.Collect(0, false)
+	}
+	return metrics.Collect(lsp.memBytes(), lsp.Enabled())
+}
+
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, getProcessMetrics(s.lsp))
 }
@@ -1005,13 +1036,13 @@ func (s *Server) handleLSPDef(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := lspCtx(r)
 	defer cancel()
 	hits, err := s.lsp.Definition(ctx, abs, rel, line, col)
-	if uiVerbose {
-		dur := fmtDuration(time.Since(start))
+	if ui.Verbose {
+		dur := ui.FmtDuration(time.Since(start))
 		if len(hits) == 1 {
 			dest := fmt.Sprintf("%s:%d", hits[0].Path, hits[0].Line)
-			uiStatus("info", "lsp def", fmt.Sprintf("%s:%d:%d -> %s  (%s)", rel, line, col, dest, dur), 0, os.Stdout)
+			ui.Status("info", "lsp def", fmt.Sprintf("%s:%d:%d -> %s  (%s)", rel, line, col, dest, dur), 0, os.Stdout)
 		} else {
-			uiStatus("info", "lsp def", fmt.Sprintf("%s:%d:%d · %d hits  (%s)", rel, line, col, len(hits), dur), 0, os.Stdout)
+			ui.Status("info", "lsp def", fmt.Sprintf("%s:%d:%d · %d hits  (%s)", rel, line, col, len(hits), dur), 0, os.Stdout)
 		}
 	}
 	s.lspRespond(w, rel, hits, err)
@@ -1027,13 +1058,13 @@ func (s *Server) handleLSPRefs(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := lspCtx(r)
 	defer cancel()
 	hits, err := s.lsp.References(ctx, abs, rel, line, col)
-	if uiVerbose {
-		dur := fmtDuration(time.Since(start))
+	if ui.Verbose {
+		dur := ui.FmtDuration(time.Since(start))
 		files := make(map[string]bool)
 		for _, h := range hits {
 			files[h.Path] = true
 		}
-		uiStatus("info", "lsp refs", fmt.Sprintf("%s:%d:%d · %d refs in %d files  (%s)", rel, line, col, len(hits), len(files), dur), 0, os.Stdout)
+		ui.Status("info", "lsp refs", fmt.Sprintf("%s:%d:%d · %d refs in %d files  (%s)", rel, line, col, len(hits), len(files), dur), 0, os.Stdout)
 	}
 	s.lspRespond(w, rel, hits, err)
 }
@@ -1067,12 +1098,12 @@ func (s *Server) handleLSPCalls(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		resp["error"] = err.Error()
 	}
-	if uiVerbose {
+	if ui.Verbose {
 		dir := "callers"
 		if q.Get("dir") == "out" {
 			dir = "callees"
 		}
-		uiStatus("info", "lsp calls", fmt.Sprintf("%s:%d:%d (%s) · %d nodes  (%s)", rel, line, col, dir, len(nodes), fmtDuration(time.Since(start))), 0, os.Stdout)
+		ui.Status("info", "lsp calls", fmt.Sprintf("%s:%d:%d (%s) · %d nodes  (%s)", rel, line, col, dir, len(nodes), ui.FmtDuration(time.Since(start))), 0, os.Stdout)
 	}
 	writeJSON(w, resp)
 }
@@ -1137,12 +1168,12 @@ func (s *Server) handleLSPSymbols(w http.ResponseWriter, r *http.Request) {
 	state, server := s.lsp.State(rel)
 	if err != nil {
 		writeJSON(w, map[string]any{
-			"symbols": []Symbol{}, "state": string(state), "server": server, "error": err.Error(),
+			"symbols": []symbols.Symbol{}, "state": string(state), "server": server, "error": err.Error(),
 		})
 		return
 	}
 	if syms == nil {
-		syms = []Symbol{}
+		syms = []symbols.Symbol{}
 	}
 	writeJSON(w, map[string]any{"symbols": syms, "state": string(state), "server": server})
 }
@@ -1177,13 +1208,13 @@ func (s *Server) handleFind(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	res := FuzzyFind(s.ix.Files(), q, limit)
+	res := fuzzy.Find(s.ix.Files(), q, limit)
 	if res == nil {
-		res = []FuzzyResult{}
+		res = []fuzzy.Result{}
 	}
-	if uiVerbose && q != "" {
-		dur := fmtDuration(time.Since(start))
-		uiStatus("info", "find", fmt.Sprintf("%q · %d files  (%s)", q, len(res), dur), 0, os.Stdout)
+	if ui.Verbose && q != "" {
+		dur := ui.FmtDuration(time.Since(start))
+		ui.Status("info", "find", fmt.Sprintf("%q · %d files  (%s)", q, len(res), dur), 0, os.Stdout)
 	}
 	writeJSON(w, map[string]any{"results": res})
 }
@@ -1220,6 +1251,8 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 			// working-tree check below can't vouch for it. Its commit diff can.
 			if ref := q.Get("ref"); ref != "" {
 				diffAvail = gitDiffCommit(s.ix.Root(), rel, ref) != ""
+			} else if avail, ok := s.ix.HasDiffAvailable(rel, s.diffBase, s.pr != nil); ok {
+				diffAvail = avail
 			} else if s.pr != nil {
 				diffAvail = gitDiffAgainst(s.ix.Root(), rel, s.diffBase) != "" ||
 					gitDiffBetween(s.ix.Root(), rel, s.diffBase, s.prHeadSHA) != "" ||
@@ -1228,16 +1261,16 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 				diffAvail = gitDiffAgainst(s.ix.Root(), rel, s.diffBase) != ""
 			}
 			if diffAvail {
-				d := newDoc("", rel)
-				if uiVerbose {
-					uiStatus("info", "view", fmt.Sprintf("%s · deleted (0 bytes)", rel), 0, os.Stdout)
+				d := render.NewDoc("", rel)
+				if ui.Verbose {
+					ui.Status("info", "view", fmt.Sprintf("%s · deleted (0 bytes)", rel), 0, os.Stdout)
 				}
 				writeJSON(w, map[string]any{
 					"path": rel, "lang": d.Lang, "total": 0, "maxCols": 0,
 					"start": 0, "lines": []string{}, "size": 0,
 					"exact": true, "refine": false,
-					"markdown":      isMarkdown(rel),
-					"table":         isTable(rel),
+					"markdown":      render.IsMarkdown(rel),
+					"table":         table.IsTable(rel),
 					"diffAvailable": true,
 					"deleted":       true,
 					"lsp":           s.lspBrief(rel),
@@ -1249,14 +1282,14 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if imageExt[strings.ToLower(filepath.Ext(rel))] {
-		if uiVerbose {
-			uiStatus("info", "view", fmt.Sprintf("%s · image (%s)", rel, formatBytes(st.Size())), 0, os.Stdout)
+		if ui.Verbose {
+			ui.Status("info", "view", fmt.Sprintf("%s · image (%s)", rel, ui.FormatBytes(st.Size())), 0, os.Stdout)
 		}
 		writeJSON(w, map[string]any{"path": rel, "image": true, "size": st.Size()})
 		return
 	}
 
-	d, err := Open(abs, rel)
+	d, err := render.Open(abs, rel)
 	if err != nil {
 		fail(w, 415, err.Error())
 		return
@@ -1264,7 +1297,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	start, _ := strconv.Atoi(q.Get("start"))
 	count, _ := strconv.Atoi(q.Get("count"))
 	if count <= 0 {
-		count = hlChunk
+		count = render.ChunkLines
 	}
 	if start < 0 {
 		start = 0
@@ -1272,8 +1305,8 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	if start > d.Total {
 		start = d.Total
 	}
-	if uiVerbose && start == 0 {
-		uiStatus("info", "view", fmt.Sprintf("%s · %d lines (%s)", rel, d.Total, formatBytes(st.Size())), 0, os.Stdout)
+	if ui.Verbose && start == 0 {
+		ui.Status("info", "view", fmt.Sprintf("%s · %d lines (%s)", rel, d.Total, ui.FormatBytes(st.Size())), 0, os.Stdout)
 	}
 	lines, exact := d.Lines(start, start+count)
 	_, coming := d.Exact()
@@ -1283,6 +1316,8 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 			// Pinned to one commit: what matters is whether that commit touched
 			// the file, not whether the working tree has since diverged.
 			diffAvail = gitDiffCommit(s.ix.Root(), rel, ref) != ""
+		} else if avail, ok := s.ix.HasDiffAvailable(rel, s.diffBase, s.pr != nil); ok {
+			diffAvail = avail
 		} else if s.pr != nil {
 			diffAvail = gitDiffAgainst(s.ix.Root(), rel, s.diffBase) != "" ||
 				gitDiffBetween(s.ix.Root(), rel, s.diffBase, s.prHeadSHA) != "" ||
@@ -1295,8 +1330,8 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		"path": rel, "lang": d.Lang, "total": d.Total, "maxCols": d.MaxCols,
 		"start": start, "lines": lines, "size": st.Size(),
 		"exact": exact, "refine": !exact && coming,
-		"markdown":      isMarkdown(rel),
-		"table":         isTable(rel),
+		"markdown":      render.IsMarkdown(rel),
+		"table":         table.IsTable(rel),
 		"diffAvailable": diffAvail,
 		"lsp":           s.lspBrief(rel),
 	})
@@ -1309,10 +1344,86 @@ func (s *Server) handleClose(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "bad path")
 		return
 	}
-	Evict(abs)
+	render.Evict(abs)
 	s.lsp.CloseDoc(abs, rel)
-	debug.FreeOSMemory()
 	writeJSON(w, map[string]any{"ok": true, "path": rel})
+}
+
+func (s *Server) handleMarkdown(w http.ResponseWriter, r *http.Request) {
+	abs, rel, ok := s.resolvePath(r.URL.Query().Get("path"))
+	if !ok {
+		fail(w, 400, "bad path")
+		return
+	}
+	if !render.IsMarkdown(rel) {
+		fail(w, 415, "not a Markdown file")
+		return
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		fail(w, 404, err.Error())
+		return
+	}
+	if st.IsDir() {
+		fail(w, 415, "is a directory")
+		return
+	}
+	if st.Size() > render.MaxMarkdownBytes {
+		fail(w, 413, "too large to preview")
+		return
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		fail(w, 404, err.Error())
+		return
+	}
+	out, err := render.RenderMarkdown(data)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"path": rel, "html": out})
+}
+
+// handleTable serves a CSV or TSV file parsed into rows for the table view.
+// Cells go back as plain strings; the client inserts them as text, never HTML.
+func (s *Server) handleTable(w http.ResponseWriter, r *http.Request) {
+	abs, rel, ok := s.resolvePath(r.URL.Query().Get("path"))
+	if !ok {
+		fail(w, 400, "bad path")
+		return
+	}
+	delim, ok := table.Delim(rel)
+	if !ok {
+		fail(w, 415, "not a CSV or TSV file")
+		return
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		fail(w, 404, err.Error())
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		fail(w, 404, err.Error())
+		return
+	}
+	if st.IsDir() {
+		fail(w, 415, "is a directory")
+		return
+	}
+	res, err := table.Render(f, st.Size(), delim)
+	if err != nil {
+		var pe *csv.ParseError
+		if errors.As(err, &pe) {
+			fail(w, 422, err.Error())
+			return
+		}
+		fail(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, res)
 }
 
 func setRawHeaders(w http.ResponseWriter, rel string) {
@@ -1387,7 +1498,7 @@ func (s *Server) handleFileSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	Evict(abs)
+	render.Evict(abs)
 	if s.lsp != nil {
 		s.lsp.CloseDoc(abs, rel)
 		s.lsp.RefreshOpenDocs()
@@ -1445,7 +1556,7 @@ func (s *Server) handleFSNew(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusInternalServerError, "failed to create file: "+err.Error())
 			return
 		}
-		Evict(abs)
+		render.Evict(abs)
 	}
 
 	if s.gitWatcher != nil {
@@ -1485,33 +1596,33 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 			"path":      rel,
 			"ref":       ref,
 			"diff":      diff,
-			"hunks":     highlightDiff(rel, diff),
+			"hunks":     render.HighlightDiff(rel, diff),
 			"available": diff != "",
 		})
 		return
 	}
 	diff := gitDiffAgainst(s.ix.Root(), rel, s.diffBase)
-	if uiVerbose {
+	if ui.Verbose {
 		status := "clean"
 		if diff != "" {
 			lines := strings.Count(diff, "\n")
 			status = fmt.Sprintf("%d diff lines", lines)
 		}
-		uiStatus("info", "diff", fmt.Sprintf("%s · %s", rel, status), 0, os.Stdout)
+		ui.Status("info", "diff", fmt.Sprintf("%s · %s", rel, status), 0, os.Stdout)
 	}
 	avail := diff != ""
 	resp := map[string]any{
 		"path":  rel,
 		"diff":  diff,
-		"hunks": highlightDiff(rel, diff),
+		"hunks": render.HighlightDiff(rel, diff),
 	}
 	if s.pr != nil {
 		prDiff := gitDiffBetween(s.ix.Root(), rel, s.diffBase, s.prHeadSHA)
 		yourDiff := gitDiffAgainst(s.ix.Root(), rel, s.prHeadSHA)
 		resp["prDiff"] = prDiff
 		resp["yourDiff"] = yourDiff
-		resp["prHunks"] = highlightDiff(rel, prDiff)
-		resp["yourHunks"] = highlightDiff(rel, yourDiff)
+		resp["prHunks"] = render.HighlightDiff(rel, prDiff)
+		resp["yourHunks"] = render.HighlightDiff(rel, yourDiff)
 		avail = avail || prDiff != "" || yourDiff != ""
 	}
 	resp["available"] = avail
@@ -1754,7 +1865,7 @@ func (s *Server) handleGitCommitMessage(w http.ResponseWriter, r *http.Request) 
 	stat := gitStagedStat(root)
 	diff := gitStagedDiff(root)
 	instruction := ""
-	if cfg := readSettings(); cfg.GitCommitMessageInstruction != nil {
+	if cfg := settings.Read(); cfg.GitCommitMessageInstruction != nil {
 		instruction = strings.TrimSpace(*cfg.GitCommitMessageInstruction)
 	}
 	job, err := s.agent.StartPrompt("commit message", commitMessagePrompt(files, stat, diff, instruction))
@@ -2189,8 +2300,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if res == nil {
 		res = []FileMatches{} // an empty result is [], never null
 	}
-	if uiVerbose && opts.Query != "" {
-		dur := fmtDuration(time.Since(start))
+	if ui.Verbose && opts.Query != "" {
+		dur := ui.FmtDuration(time.Since(start))
 		matchStr := "matches"
 		if total == 1 {
 			matchStr = "match"
@@ -2203,7 +2314,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if truncated {
 			truncStr = " (truncated)"
 		}
-		uiStatus("info", "search", fmt.Sprintf("%q · %d %s in %d %s%s  (%s)", opts.Query, total, matchStr, len(res), fileStr, truncStr, dur), 0, os.Stdout)
+		ui.Status("info", "search", fmt.Sprintf("%q · %d %s in %d %s%s  (%s)", opts.Query, total, matchStr, len(res), fileStr, truncStr, dur), 0, os.Stdout)
 	}
 	writeJSON(w, map[string]any{"results": res, "files": len(res), "total": total, "truncated": truncated})
 }
@@ -2215,16 +2326,16 @@ func (s *Server) handleOutline(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "bad path")
 		return
 	}
-	syms, err := Outline(abs, rel)
+	syms, err := symbols.Outline(abs, rel)
 	if err != nil {
 		fail(w, 404, err.Error())
 		return
 	}
 	if syms == nil {
-		syms = []Symbol{}
+		syms = []symbols.Symbol{}
 	}
-	if uiVerbose {
-		uiStatus("info", "outline", fmt.Sprintf("%s · %d symbols  (%s)", rel, len(syms), fmtDuration(time.Since(start))), 0, os.Stdout)
+	if ui.Verbose {
+		ui.Status("info", "outline", fmt.Sprintf("%s · %d symbols  (%s)", rel, len(syms), ui.FmtDuration(time.Since(start))), 0, os.Stdout)
 	}
 	writeJSON(w, map[string]any{"path": rel, "symbols": syms})
 }
@@ -2282,13 +2393,13 @@ func (s *Server) handleDef(w http.ResponseWriter, r *http.Request) {
 	if defs == nil {
 		defs = []hit{}
 	}
-	if uiVerbose {
-		dur := fmtDuration(time.Since(start))
+	if ui.Verbose {
+		dur := ui.FmtDuration(time.Since(start))
 		defStr := "definitions"
 		if len(defs) == 1 {
 			defStr = "definition"
 		}
-		uiStatus("info", "def", fmt.Sprintf("%q · %d %s, %d refs  (%s)", sym, len(defs), defStr, refs, dur), 0, os.Stdout)
+		ui.Status("info", "def", fmt.Sprintf("%q · %d %s, %d refs  (%s)", sym, len(defs), defStr, refs, dur), 0, os.Stdout)
 	}
 	writeJSON(w, map[string]any{
 		"symbol": sym, "defs": defs, "refCount": refs,
@@ -2297,7 +2408,7 @@ func (s *Server) handleDef(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
-	EvictAll()
+	render.EvictAll()
 	s.ix.Build()
 	if s.gitWatcher != nil {
 		s.gitWatcher.Trigger()
@@ -2314,11 +2425,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, map[string]any{
-			"settings": readMergedSettingsMap(),
-			"defaults": defaultSettingsMap(),
-			"schema":   settingsSchema,
-			"raw":      readRawSettingsJSON(),
-			"path":     settingsPath(),
+			"settings": settings.ReadMergedMap(),
+			"defaults": settings.DefaultMap(),
+			"schema":   settings.Schema,
+			"raw":      settings.ReadRawJSON(),
+			"path":     settings.Path(),
 		})
 	case http.MethodPost:
 		if !localPost(w, r) {
@@ -2345,28 +2456,28 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if rawStr, ok := payload["raw"].(string); ok {
-			if err := saveRawSettingsJSON([]byte(rawStr)); err != nil {
+			if err := settings.SaveRawJSON([]byte(rawStr)); err != nil {
 				fail(w, 400, "invalid JSON in settings: "+err.Error())
 				return
 			}
 		} else {
-			if err := updateSettingsMap(payload); err != nil {
+			if err := settings.UpdateMap(payload); err != nil {
 				fail(w, 500, err.Error())
 				return
 			}
 		}
 
 		if s.agent != nil {
-			currentSettings := readSettings()
+			currentSettings := settings.Read()
 			if currentSettings.Agent != "" && currentSettings.Agent != s.agent.Name() {
 				_ = s.agent.Select(currentSettings.Agent, s.agent.Model())
 			}
 		}
 
 		writeJSON(w, map[string]any{
-			"settings": readMergedSettingsMap(),
-			"raw":      readRawSettingsJSON(),
-			"path":     settingsPath(),
+			"settings": settings.ReadMergedMap(),
+			"raw":      settings.ReadRawJSON(),
+			"path":     settings.Path(),
 			"ok":       true,
 		})
 	default:

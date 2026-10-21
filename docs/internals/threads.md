@@ -117,7 +117,7 @@ Every mutating endpoint is guarded by `localPost`, and carries the same security
 
 `thread.js` owns two views in the `#pane-right-threads` pane: the list and one thread (or a draft). `newThread(info)` is registered into `selbar.js` through `setThreadHandler`, the same one-way hook `agent.js` uses. The compose box's harness and model selects are registered with `registerAgentPicker` in `agent.js`, so they show and set the same global selection as every other picker.
 
-The list stream is opened once at startup and drives the running indicators and the tab reload. The per-thread stream is opened when a thread is opened and closed when leaving it. Replies are rendered by a small escape-first Markdown subset (`thrMd`): fences, inline code, bold and bullet lists, so a reply can never inject markup.
+The list stream is opened once at startup and drives the running indicators and the tab reload. The per-thread stream is opened when a thread is opened and closed when leaving it. Replies are rendered by a small escape-first Markdown subset (`thrMd`): fences, inline code, bold and bullet lists, so a reply can never inject markup, with streaming `delta` updates coalesced into `requestAnimationFrame`.
 
 ## 8b. PR Scope
 

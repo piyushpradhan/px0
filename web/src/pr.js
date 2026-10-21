@@ -321,9 +321,14 @@ function findDiffRowEl(path, side, line) {
   if (!diffview || diffview.hidden) return null;
   const d = doc_();
   if (!d || d.path !== path) return null;
-  // Review comments are only ever posted against the PR's own diff (see
-  // diff.js's reviewable flag), so a "Your changes" row sharing the same
-  // line number must never be matched here.
+  // Direct attribute lookup avoids scanning every row on scroll frames.
+  if (side === 'LEFT') {
+    const direct = diffview.querySelector(`[data-old-l="${line}"]:not([data-l]):not([data-reviewable="0"])`);
+    if (direct) return direct;
+  } else {
+    const direct = diffview.querySelector(`[data-l="${line}"]:not([data-reviewable="0"])`);
+    if (direct) return direct;
+  }
   for (const el of diffview.querySelectorAll('[data-l]:not([data-reviewable="0"]), [data-old-l]:not([data-reviewable="0"])')) {
     const isOldOnly = el.dataset.oldL !== undefined && el.dataset.l === undefined;
     const elSide = isOldOnly ? 'LEFT' : 'RIGHT';

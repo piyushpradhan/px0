@@ -52,12 +52,13 @@ let pinnedInfo = null; // the line a gutter button opened the menu for; independ
 let allText = null;   // Ctrl+A: promise of the S.selAll file's full text
 let allInfo = null;   // the bar's view of that selection, once the text arrives
 
+const HTML_ENTITIES = { '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&#39;': "'" };
+
 function lineToText(body) {
   if (body === undefined || body === null) return '';
-  if (!body.includes('<')) return body;
-  const t = document.createElement('div');
-  t.innerHTML = body;
-  return t.textContent || '';
+  const noTags = body.includes('<') ? body.replace(/<[^>]*>/g, '') : body;
+  if (!noTags.includes('&')) return noTags;
+  return noTags.replace(/&(lt|gt|amp|quot|#39);/g, m => HTML_ENTITIES[m] || m);
 }
 
 function extractEditorSelection(range, d) {
@@ -489,10 +490,18 @@ export function initSelectionBar() {
      Once showing, follow the selection as it changes, and leave when it collapses
      or moves out of the editor. Listening on the document catches a drag that
      is released outside the viewport. */
+  let selRAF = 0;
+  const scheduleSelectionBar = () => {
+    if (selRAF) return;
+    selRAF = requestAnimationFrame(() => {
+      selRAF = 0;
+      updateSelectionBar();
+    });
+  };
   document.addEventListener('mouseup', () => setTimeout(updateSelectionBar, 20));
   vp.addEventListener('keyup', e => { if (e.shiftKey) setTimeout(updateSelectionBar, 20); });
   if (mdviewEl) mdviewEl.addEventListener('keyup', e => { if (e.shiftKey) setTimeout(updateSelectionBar, 20); });
-  document.addEventListener('selectionchange', () => updateSelectionBar());
+  document.addEventListener('selectionchange', scheduleSelectionBar);
   // Any click ends a whole-file selection, except on the bar's buttons or a viewport scrollbar.
   document.addEventListener('mousedown', e => {
     // A right click opens the menu for the selection, so it must not end it.

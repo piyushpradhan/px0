@@ -398,6 +398,11 @@ export function closeTab(i) {
   closeTabs([i]);
 }
 
+export function closeAllTabs() {
+  if (!S.tabs.length) return;
+  closeTabs(S.tabs.map((_, idx) => idx));
+}
+
 function closeTabs(indices) {
   if (!indices.length) return;
   const dirtyTabs = indices.map(i => S.tabs[i]).filter(t => t?.dirty);

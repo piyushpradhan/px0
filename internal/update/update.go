@@ -1,4 +1,4 @@
-package main
+package update
 
 import (
 	"bufio"
@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"px0/internal/ui"
 )
 
 const (
@@ -225,15 +227,15 @@ func downloadVerifiedAsset(client *http.Client, assetURL, checksumURL, assetName
 	return nil
 }
 
-// autoUpdate runs in a background goroutine after the server has already
+// AutoUpdate runs in a background goroutine after the server has already
 // started listening, so px0 never makes a network call before serving. It
 // reuses the cached daily-check state so it only hits the network once
 // every updateCheckPeriod; on the days it does check, a newer release is
 // installed in place and a notice is printed on the CLI instructing the user
 // to restart px0. Any failure (network, permissions, verification) is non-fatal:
 // px0 continues running on the current binary.
-func autoUpdate(currentVersion string) {
-	if uiQuiet {
+func AutoUpdate(currentVersion string) {
+	if ui.Quiet {
 		return
 	}
 
@@ -258,8 +260,8 @@ func autoUpdate(currentVersion string) {
 	}
 
 	if latestVer == "" || compareSemver(latestVer, currentVersion) <= 0 {
-		if uiVerbose {
-			uiStatus("ok", fmt.Sprintf("px0 is up to date (v%s)", currentVersion), "", 0, os.Stdout)
+		if ui.Verbose {
+			ui.Status("ok", fmt.Sprintf("px0 is up to date (v%s)", currentVersion), "", 0, os.Stdout)
 		}
 		return
 	}
@@ -274,8 +276,8 @@ func autoUpdate(currentVersion string) {
 		}
 		latestVer = strings.TrimPrefix(rel.TagName, "v")
 		if compareSemver(latestVer, currentVersion) <= 0 {
-			if uiVerbose {
-				uiStatus("ok", fmt.Sprintf("px0 is up to date (v%s)", currentVersion), "", 0, os.Stdout)
+			if ui.Verbose {
+				ui.Status("ok", fmt.Sprintf("px0 is up to date (v%s)", currentVersion), "", 0, os.Stdout)
 			}
 			return
 		}
@@ -290,22 +292,22 @@ func autoUpdate(currentVersion string) {
 		return
 	}
 
-	uiStatus("step", fmt.Sprintf("updating px0 v%s -> v%s...", currentVersion, latestVer), "pass -no-update to skip", 0, os.Stdout)
+	ui.Status("step", fmt.Sprintf("updating px0 v%s -> v%s...", currentVersion, latestVer), "pass -no-update to skip", 0, os.Stdout)
 
 	if err := installUpdate(rel, latestVer, execPath); err != nil {
-		uiStatus("warn", fmt.Sprintf("auto-update failed: %v", err), "continuing with current version", 0, os.Stderr)
+		ui.Status("warn", fmt.Sprintf("auto-update failed: %v", err), "continuing with current version", 0, os.Stderr)
 		return
 	}
 
 	writeUpdateState(&updateState{LastChecked: time.Now(), LatestVer: latestVer})
 
-	uiStatus("ok", fmt.Sprintf("px0 has been updated to v%s", latestVer), "restart px0 to see the latest changes", 0, os.Stdout)
+	ui.Status("ok", fmt.Sprintf("px0 has been updated to v%s", latestVer), "restart px0 to see the latest changes", 0, os.Stdout)
 }
 
-// runSelfUpdate implements px0 --update.
-func runSelfUpdate(currentVer string) error {
+// RunSelfUpdate implements px0 --update.
+func RunSelfUpdate(currentVer string) error {
 	repo := getRepoName()
-	uiStatus("step", fmt.Sprintf("checking for updates from %s...", repo), "", 0, os.Stdout)
+	ui.Status("step", fmt.Sprintf("checking for updates from %s...", repo), "", 0, os.Stdout)
 
 	rel, err := fetchLatestRelease(repo)
 	if err != nil {
@@ -314,11 +316,11 @@ func runSelfUpdate(currentVer string) error {
 
 	latestVer := strings.TrimPrefix(rel.TagName, "v")
 	if compareSemver(latestVer, currentVer) <= 0 {
-		uiStatus("ok", fmt.Sprintf("px0 is already up to date (v%s)", currentVer), "", 0, os.Stdout)
+		ui.Status("ok", fmt.Sprintf("px0 is already up to date (v%s)", currentVer), "", 0, os.Stdout)
 		return nil
 	}
 
-	uiStatus("info", fmt.Sprintf("found newer version v%s (current: v%s)", latestVer, currentVer), "", 0, os.Stdout)
+	ui.Status("info", fmt.Sprintf("found newer version v%s (current: v%s)", latestVer, currentVer), "", 0, os.Stdout)
 
 	execPath, err := os.Executable()
 	if err != nil {
@@ -339,7 +341,7 @@ func runSelfUpdate(currentVer string) error {
 		LatestVer:   latestVer,
 	})
 
-	uiStatus("ok", fmt.Sprintf("px0 successfully updated to v%s at %s", latestVer, execPath), "", 0, os.Stdout)
+	ui.Status("ok", fmt.Sprintf("px0 successfully updated to v%s at %s", latestVer, execPath), "", 0, os.Stdout)
 	return nil
 }
 
@@ -370,7 +372,7 @@ func installUpdate(rel *githubRelease, latestVer, execPath string) error {
 		return fmt.Errorf("release %s does not include checksums.txt", rel.TagName)
 	}
 
-	uiStatus("step", fmt.Sprintf("downloading %s...", expectedAsset), "", 0, os.Stdout)
+	ui.Status("step", fmt.Sprintf("downloading %s...", expectedAsset), "", 0, os.Stdout)
 
 	// Download to temporary file in the same directory as the executable (for atomic rename)
 	dir := filepath.Dir(execPath)

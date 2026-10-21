@@ -460,8 +460,20 @@ export function applySettingLive(key, val) {
 
 export function applyAllSettingsLive() {
   if (!S.settings) return;
+  let needTypography = false;
   for (const [k, v] of Object.entries(S.settings)) {
+    if (k === 'editor.fontSize' || k === 'editor.fontFamily' || k === 'editor.lineHeight' || k === 'editor.tabSize') {
+      needTypography = true;
+      continue;
+    }
     applySettingLive(k, v);
+  }
+  if (needTypography) {
+    const fs = parseFloat(S.settings['editor.fontSize']) || 13.5;
+    const ff = S.settings['editor.fontFamily'] || '';
+    const lh = parseFloat(S.settings['editor.lineHeight']) || 21.0;
+    const ts = parseInt(S.settings['editor.tabSize'], 10) || 4;
+    applyEditorTypography(fs, ff, lh, ts);
   }
 }
 

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"px0/internal/settings"
 )
 
 func TestDetectPRURL(t *testing.T) {
@@ -69,13 +71,13 @@ func TestResolveGitHubTokenPrecedence(t *testing.T) {
 	// settings.json wins over everything, including the environment.
 	t.Setenv("GITHUB_TOKEN", "env-token")
 	settingsToken := "settings-token"
-	token, source := resolveGitHubToken(settings{GitHubToken: &settingsToken})
+	token, source := resolveGitHubToken(settings.Settings{GitHubToken: &settingsToken})
 	if token != "settings-token" || source != "settings" {
 		t.Errorf("got (%q, %q), want (settings-token, settings)", token, source)
 	}
 
 	// With no settings token, the environment variable wins.
-	token, source = resolveGitHubToken(settings{})
+	token, source = resolveGitHubToken(settings.Settings{})
 	if token != "env-token" || source != "env" {
 		t.Errorf("got (%q, %q), want (env-token, env)", token, source)
 	}
@@ -88,7 +90,7 @@ func TestResolveGitHubTokenNoneAvailable(t *testing.T) {
 	empty := t.TempDir()
 	t.Setenv("PATH", empty)
 
-	token, source := resolveGitHubToken(settings{})
+	token, source := resolveGitHubToken(settings.Settings{})
 	if token != "" || source != "" {
 		t.Errorf("got (%q, %q), want (\"\", \"\")", token, source)
 	}
@@ -97,7 +99,7 @@ func TestResolveGitHubTokenNoneAvailable(t *testing.T) {
 func TestResolveGitHubTokenBlankSettingsFallsThrough(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "env-token")
 	blank := "   "
-	token, source := resolveGitHubToken(settings{GitHubToken: &blank})
+	token, source := resolveGitHubToken(settings.Settings{GitHubToken: &blank})
 	if token != "env-token" || source != "env" {
 		t.Errorf("a blank settings token must fall through to the env var; got (%q, %q)", token, source)
 	}
@@ -606,5 +608,375 @@ func TestPRSessionPullFollowsForcePush(t *testing.T) {
 	gitTestRun(t, work, "push", "-qf", upstream, "feature")
 	if _, err := p.Pull(); !errors.Is(err, errPRDiverged) {
 		t.Fatalf("expected errPRDiverged with a local commit, got %v", err)
+	}
+}
+
+// connectProvider is a GitLab provider whose API answers are canned: one
+// token is accepted and has push access, everything else is rejected.
+type connectProvider struct {
+	GitLabProvider
+	good string
+}
+
+func (c *connectProvider) FetchPR(ctx context.Context, t PRTarget, token string) (PRMeta, error) {
+	if token != c.good {
+		return PRMeta{}, errors.New("gitlab: 401 Unauthorized (token " + token + ")")
+	}
+	return PRMeta{Number: t.Number}, nil
+}
+
+func (c *connectProvider) CheckPushAccess(ctx context.Context, t PRTarget, token string) bool {
+	return token == c.good
+}
+
+func connectServer(t *testing.T, host string) *Server {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("GITLAB_HOST", "")
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("PATH", t.TempDir()) // no glab
+	s, _ := newTestServer(t)
+	s.pr = &prSession{
+		provider: &connectProvider{good: "good-token"},
+		target:   PRTarget{Provider: "gitlab", Host: host, Owner: "g", Repo: "r", Number: 4},
+		meta:     PRMeta{Number: 4},
+	}
+	return s
+}
+
+func TestForgeConnectAppliesAndSaves(t *testing.T) {
+	s := connectServer(t, "gitlab.example.com")
+	w := postJSON(t, s, "/api/forge/connect", `{"token":"good-token"}`)
+	if w.Code != 200 {
+		t.Fatalf("connect: %d %s", w.Code, w.Body)
+	}
+	var res map[string]any
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res["saved"] != true || res["validated"] != true || res["writeAccess"] != true {
+		t.Errorf("result = %v", res)
+	}
+	// Live: the running review uses it now, with no restart.
+	if s.pr.token != "good-token" || !s.pr.writeAccess {
+		t.Errorf("session token=%q writeAccess=%v", s.pr.token, s.pr.writeAccess)
+	}
+	// Saved, along with the host it belongs to, so the next session finds it.
+	cfg := settings.Read()
+	if cfg.GitLabToken == nil || *cfg.GitLabToken != "good-token" || cfg.GitLabHost == nil || *cfg.GitLabHost != "gitlab.example.com" {
+		t.Errorf("settings = token %v host %v", cfg.GitLabToken, cfg.GitLabHost)
+	}
+	if tok, src := (&GitLabProvider{}).ResolveToken(cfg, PRTarget{Host: "gitlab.example.com"}); tok != "good-token" || src != "settings" {
+		t.Errorf("resolve after connect = %q/%q", tok, src)
+	}
+	meta := s.forgeMeta()
+	if meta["hasToken"] != true || meta["source"] != "settings" {
+		t.Errorf("forgeMeta = %v", meta)
+	}
+}
+
+func TestForgeConnectRejectsBadToken(t *testing.T) {
+	s := connectServer(t, "gitlab.com")
+	w := postJSON(t, s, "/api/forge/connect", `{"token":"bad-token"}`)
+	if w.Code != 400 {
+		t.Fatalf("bad token accepted: %d %s", w.Code, w.Body)
+	}
+	if body := w.Body.String(); strings.Contains(body, "bad-token") {
+		t.Errorf("error echoes the token: %s", body)
+	}
+	if cfg := settings.Read(); cfg.GitLabToken != nil || cfg.GitLabHost != nil {
+		t.Errorf("rejected token was kept: %v %v", cfg.GitLabToken, cfg.GitLabHost)
+	}
+	if s.pr.token != "" {
+		t.Errorf("session took a rejected token")
+	}
+	if w := postJSON(t, s, "/api/forge/connect", `{"token":"  "}`); w.Code != 400 {
+		t.Errorf("empty token: %d", w.Code)
+	}
+}
+
+// A token already saved for one GitLab host is not replaced by connecting to
+// another: the new one serves this session only.
+func TestForgeConnectKeepsOtherHostsToken(t *testing.T) {
+	s := connectServer(t, "gitlab.other.org")
+	if err := settings.UpdateMap(map[string]any{"gitlab.token": "corp-token", "gitlab.host": "gitlab.corp.io"}); err != nil {
+		t.Fatal(err)
+	}
+	w := postJSON(t, s, "/api/forge/connect", `{"token":"good-token"}`)
+	var res map[string]any
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if w.Code != 200 || res["saved"] != false {
+		t.Fatalf("connect: %d %v", w.Code, res)
+	}
+	cfg := settings.Read()
+	if *cfg.GitLabToken != "corp-token" || *cfg.GitLabHost != "gitlab.corp.io" {
+		t.Errorf("other host's token replaced: %v %v", *cfg.GitLabToken, *cfg.GitLabHost)
+	}
+	if s.pr.token != "good-token" || s.forgeMeta()["source"] != "session" {
+		t.Errorf("session token = %q, source %v", s.pr.token, s.forgeMeta()["source"])
+	}
+}
+
+func TestTokenSetupPerForge(t *testing.T) {
+	cases := []struct {
+		p       GitProvider
+		host    string
+		url     string
+		hostKey string
+	}{
+		{&GitHubProvider{}, "github.com", "https://github.com/settings/personal-access-tokens/new", ""},
+		{&GitLabProvider{}, "gitlab.corp.io", "https://gitlab.corp.io/-/user_settings/personal_access_tokens", "gitlab.host"},
+		{&GiteaProvider{}, "git.example.org", "https://git.example.org/user/settings/applications", "gitea.host"},
+		{&BitbucketProvider{}, "bitbucket.org", "https://id.atlassian.com/manage-profile/security/api-tokens", ""},
+	}
+	for _, c := range cases {
+		st := c.p.TokenSetup(c.host)
+		if st.URL != c.url || st.HostKey != c.hostKey || len(st.Steps) == 0 || st.Env == "" || st.Readonly == "" {
+			t.Errorf("%s: %+v", c.p.Name(), st)
+		}
+		// Every setting the dialog writes must exist in the Settings schema.
+		for _, key := range []string{c.p.Info().TokenKey, st.HostKey} {
+			if key != "" && !schemaHas(key) {
+				t.Errorf("%s: setting %q missing from the schema", c.p.Name(), key)
+			}
+		}
+		if st.Extra != nil && !schemaHas(st.Extra.Key) {
+			t.Errorf("%s: setting %q missing from the schema", c.p.Name(), st.Extra.Key)
+		}
+	}
+}
+
+func schemaHas(key string) bool {
+	for _, it := range settings.Schema {
+		if it.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGitHubMergeState(t *testing.T) {
+	f, tr := false, true
+	cases := []struct {
+		merged    bool
+		state     string
+		draft     bool
+		mergeable *bool
+		ms        string
+		want      string
+	}{
+		{merged: true, state: "closed", want: MergeStateMerged},
+		{state: "closed", want: MergeStateClosed},
+		{state: "open", draft: true, ms: "draft", want: MergeStateDraft},
+		{state: "open", mergeable: &f, ms: "dirty", want: MergeStateConflicts},
+		{state: "open", mergeable: &f, want: MergeStateConflicts},
+		{state: "open", mergeable: &tr, ms: "behind", want: MergeStateBehind},
+		{state: "open", mergeable: &tr, ms: "blocked", want: MergeStateBlocked},
+		{state: "open", mergeable: &tr, ms: "unstable", want: MergeStateUnstable},
+		{state: "open", mergeable: &tr, ms: "clean", want: MergeStateClean},
+		{state: "open", mergeable: &tr, ms: "has_hooks", want: MergeStateClean},
+		{state: "open", ms: "unknown", want: MergeStateUnknown},
+		{state: "open", want: MergeStateUnknown},
+	}
+	for _, c := range cases {
+		if got, _ := githubMergeState(c.merged, c.state, c.draft, c.mergeable, c.ms, "main"); got != c.want {
+			t.Errorf("githubMergeState(%+v) = %q, want %q", c, got, c.want)
+		}
+	}
+}
+
+func TestFetchMergeStatusMethods(t *testing.T) {
+	orig := githubHTTPClient.Transport
+	defer func() { githubHTTPClient.Transport = orig }()
+	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"state":"open","mergeable":true,"mergeable_state":"clean","base":{"ref":"main"},"head":{"sha":"abc123"}}`
+		if req.URL.Path == "/repos/o/r" {
+			body = `{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":false,"permissions":{"push":true}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})
+	st, err := fetchMergeStatus(context.Background(), "o", "r", 7, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != MergeStateClean || !st.CanMerge || st.HeadSHA != "abc123" {
+		t.Fatalf("status = %+v", st)
+	}
+	if strings.Join(st.Methods, ",") != "merge,squash" {
+		t.Fatalf("methods = %v, want merge,squash (rebase disallowed on the repo)", st.Methods)
+	}
+}
+
+func TestMergePRRequestAndErrors(t *testing.T) {
+	orig := githubHTTPClient.Transport
+	defer func() { githubHTTPClient.Transport = orig }()
+	var got map[string]string
+	status := http.StatusOK
+	githubHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut || req.URL.Path != "/repos/o/r/pulls/7/merge" {
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+		}
+		got = nil
+		json.NewDecoder(req.Body).Decode(&got)
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(`{"sha":"m1","merged":true,"message":"Head branch was modified"}`)), Header: make(http.Header)}, nil
+	})
+
+	res, err := mergePR(context.Background(), "o", "r", 7, "tok", PRMergeRequest{Method: MergeMethodSquash, Title: "Add x (#7)", Message: "body", HeadSHA: "abc"})
+	if err != nil || res.SHA != "m1" {
+		t.Fatalf("merge = %+v, %v", res, err)
+	}
+	if got["merge_method"] != "squash" || got["sha"] != "abc" || got["commit_title"] != "Add x (#7)" || got["commit_message"] != "body" {
+		t.Fatalf("payload = %v", got)
+	}
+
+	// A rebase writes no commit of its own: no title or message is sent.
+	if _, err := mergePR(context.Background(), "o", "r", 7, "tok", PRMergeRequest{Method: MergeMethodRebase, Title: "ignored", HeadSHA: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["commit_title"]; ok {
+		t.Fatalf("rebase payload carries a title: %v", got)
+	}
+
+	status = http.StatusConflict
+	if _, err := mergePR(context.Background(), "o", "r", 7, "tok", PRMergeRequest{Method: MergeMethodMerge, HeadSHA: "abc"}); !errors.Is(err, ErrPRHeadMoved) {
+		t.Fatalf("409: err = %v, want ErrPRHeadMoved", err)
+	}
+	status = http.StatusMethodNotAllowed
+	if _, err := mergePR(context.Background(), "o", "r", 7, "tok", PRMergeRequest{Method: MergeMethodMerge}); !errors.Is(err, ErrPRNotMergeable) {
+		t.Fatalf("405: err = %v, want ErrPRNotMergeable", err)
+	}
+}
+
+func TestPRMergeDefaults(t *testing.T) {
+	meta := PRMeta{Number: 12, Title: "Add widgets", HeadRef: "widgets"}
+	d := prMergeDefaults(meta, []UnpushedCommit{{Subject: "second"}, {Subject: "first"}})
+	if d[MergeMethodSquash].Title != "Add widgets (#12)" || d[MergeMethodSquash].Message != "* first\n* second" {
+		t.Fatalf("squash default = %+v", d[MergeMethodSquash])
+	}
+	if d[MergeMethodMerge].Title != "Merge pull request #12 from widgets" || d[MergeMethodMerge].Message != "Add widgets" {
+		t.Fatalf("merge default = %+v", d[MergeMethodMerge])
+	}
+}
+
+func TestMergeMessagePrompt(t *testing.T) {
+	meta := PRMeta{Number: 3, Title: "Fix race", BaseRef: "main", HeadRef: "fix"}
+	p := mergeMessagePrompt(MergeMethodSquash, meta, []UnpushedCommit{{Subject: "fixup"}, {Subject: "fix the race"}}, "a.go | 2 +-", "diff --git", "Fix race (#3)", []string{"Follow Conventional Commits", "Mention ticket PX-9"})
+	for _, want := range []string{"squash-merging pull request #3", "Follow Conventional Commits", "Mention ticket PX-9", "rewriting", "Fix race (#3)", "- fix the race\n- fixup", "Output ONLY"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+}
+
+func TestGitSyncPromptPR(t *testing.T) {
+	st := gitSyncState{PR: 9, Branch: "feat", Upstream: "main", Ahead: 2, Behind: 5, ontoRef: "refs/px0/base/9"}
+	p := gitSyncPrompt("rebase", st)
+	for _, want := range []string{"Pull request #9", "git rebase refs/px0/base/9", "do not run git fetch", "do not push"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("rebase prompt missing %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "git fetch refs") {
+		t.Errorf("prompt asks the harness to fetch:\n%s", p)
+	}
+	if p := gitSyncPrompt("merge", st); !strings.Contains(p, `Merge branch 'main' into feat`) || !strings.Contains(p, "refs/px0/base/9") {
+		t.Errorf("merge prompt:\n%s", p)
+	}
+}
+
+// TestPRForcePushAfterRebase covers the PR rebase flow's last step: the
+// rebased checkout is detected as rewritten, a plain push is refused, and a
+// force-push with lease replaces the PR branch -- unless someone else pushed
+// to it meanwhile, in which case the lease refuses and their commit survives.
+func TestPRForcePushAfterRebase(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	base := t.TempDir()
+	if r, err := filepath.EvalSymlinks(base); err == nil {
+		base = r
+	}
+	cfg := func(dir string) {
+		for _, c := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+			gitTestRun(t, dir, "config", c[0], c[1])
+		}
+	}
+	upstream := filepath.Join(base, "upstream.git")
+	os.MkdirAll(upstream, 0o755)
+	gitTestRun(t, upstream, "init", "-q", "--bare", "-b", "main")
+
+	work := filepath.Join(base, "work")
+	os.MkdirAll(work, 0o755)
+	gitTestRun(t, work, "init", "-q", "-b", "main")
+	cfg(work)
+	os.WriteFile(filepath.Join(work, "a.txt"), []byte("a\n"), 0o644)
+	gitTestRun(t, work, "add", ".")
+	gitTestRun(t, work, "commit", "-qm", "base")
+	gitTestRun(t, work, "push", "-q", upstream, "main")
+	gitTestRun(t, work, "checkout", "-qb", "feature")
+	os.WriteFile(filepath.Join(work, "f.txt"), []byte("f\n"), 0o644)
+	gitTestRun(t, work, "add", ".")
+	gitTestRun(t, work, "commit", "-qm", "feature")
+	gitTestRun(t, work, "push", "-q", upstream, "feature")
+	head := strings.TrimSpace(gitTestRun(t, work, "rev-parse", "HEAD"))
+	gitTestRun(t, work, "checkout", "-q", "main")
+	os.WriteFile(filepath.Join(work, "b.txt"), []byte("b\n"), 0o644)
+	gitTestRun(t, work, "add", ".")
+	gitTestRun(t, work, "commit", "-qm", "main moves on")
+	gitTestRun(t, work, "push", "-q", upstream, "main")
+
+	wt := filepath.Join(base, "wt")
+	gitTestRun(t, base, "clone", "-q", "-b", "feature", upstream, "wt")
+	cfg(wt)
+	gitTestRun(t, wt, "fetch", "-q", upstream, "+refs/heads/main:"+prBaseRef(1))
+	p := &prSession{
+		worktree: wt,
+		target:   PRTarget{Owner: "o", Repo: "r"},
+		meta:     PRMeta{Number: 1, BaseRef: "main", HeadRef: "feature", HeadRepoCloneURL: upstream, HeadSHA: head},
+	}
+	if p.Rewritten() {
+		t.Fatal("fresh checkout reported as rewritten")
+	}
+	if a, b := gitAheadBehindRef(wt, prBaseRef(1)); a != 1 || b != 1 {
+		t.Fatalf("ahead/behind base = %d/%d, want 1/1", a, b)
+	}
+
+	gitTestRun(t, wt, "rebase", "-q", prBaseRef(1))
+	if !p.Rewritten() {
+		t.Fatal("rebased checkout not reported as rewritten")
+	}
+	if err := p.Push(false); err == nil {
+		t.Fatal("a plain push of a rebased branch should be refused")
+	}
+
+	// Someone else pushes to the PR branch: the lease must refuse.
+	other := filepath.Join(base, "other")
+	gitTestRun(t, base, "clone", "-q", "-b", "feature", upstream, "other")
+	cfg(other)
+	os.WriteFile(filepath.Join(other, "o.txt"), []byte("o\n"), 0o644)
+	gitTestRun(t, other, "add", ".")
+	gitTestRun(t, other, "commit", "-qm", "theirs")
+	gitTestRun(t, other, "push", "-q", "origin", "feature")
+	theirs := strings.TrimSpace(gitTestRun(t, other, "rev-parse", "HEAD"))
+	if err := p.Push(true); err == nil {
+		t.Fatal("force-push should be refused by the lease after someone else pushed")
+	}
+	if got := strings.TrimSpace(gitTestRun(t, upstream, "rev-parse", "refs/heads/feature")); got != theirs {
+		t.Fatalf("their commit was overwritten: feature = %s, want %s", got, theirs)
+	}
+
+	// Lease on what is actually there (as a pull would): the force-push lands.
+	gitTestRun(t, upstream, "update-ref", "refs/heads/feature", head)
+	if err := p.Push(true); err != nil {
+		t.Fatalf("force-push with a valid lease: %v", err)
+	}
+	rebased := strings.TrimSpace(gitTestRun(t, wt, "rev-parse", "HEAD"))
+	if got := strings.TrimSpace(gitTestRun(t, upstream, "rev-parse", "refs/heads/feature")); got != rebased {
+		t.Fatalf("feature = %s, want the rebased head %s", got, rebased)
+	}
+	if p.Rewritten() || p.meta.HeadSHA != rebased {
+		t.Fatalf("after push: rewritten=%v head=%s", p.Rewritten(), p.meta.HeadSHA)
+	}
+	mainTip := strings.TrimSpace(gitTestRun(t, wt, "rev-parse", prBaseRef(1)))
+	if p.diffBase != mainTip {
+		t.Fatalf("diffBase = %q, want the new merge-base %s", p.diffBase, mainTip)
 	}
 }

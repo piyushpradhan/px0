@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"px0/internal/settings"
 )
 
 // bitbucket.go implements GitProvider for Bitbucket Cloud (bitbucket.org)
@@ -98,7 +100,7 @@ func (b *BitbucketProvider) PRHeadRef(t PRTarget) string { return "" }
 // Access tokens authenticate git as "x-token-auth"; API tokens as the fixed
 // name Atlassian documents for them.
 func (b *BitbucketProvider) GitAuth(t PRTarget, token string) gitAuth {
-	if bitbucketEmail(readSettings()) != "" {
+	if bitbucketEmail(settings.Read()) != "" {
 		return basicGitAuth("bitbucket.org", "x-bitbucket-api-token-auth", token)
 	}
 	return basicGitAuth("bitbucket.org", "x-token-auth", token)
@@ -106,7 +108,7 @@ func (b *BitbucketProvider) GitAuth(t PRTarget, token string) gitAuth {
 
 // bitbucketEmail is the Atlassian account email an API token belongs to, or
 // "" when the token is an access token.
-func bitbucketEmail(cfg settings) string {
+func bitbucketEmail(cfg settings.Settings) string {
 	if cfg.BitbucketEmail != nil {
 		if e := strings.TrimSpace(*cfg.BitbucketEmail); e != "" {
 			return e
@@ -116,7 +118,7 @@ func bitbucketEmail(cfg settings) string {
 }
 
 // Bitbucket Cloud has one host, so there is no cross-host risk to guard.
-func (b *BitbucketProvider) ResolveToken(cfg settings, t PRTarget) (token, source string) {
+func (b *BitbucketProvider) ResolveToken(cfg settings.Settings, t PRTarget) (token, source string) {
 	if cfg.BitbucketToken != nil {
 		if tok := strings.TrimSpace(*cfg.BitbucketToken); tok != "" {
 			return tok, "settings"
@@ -131,7 +133,7 @@ func (b *BitbucketProvider) ResolveToken(cfg settings, t PRTarget) (token, sourc
 func bitbucketAPI(token string) forgeAPI {
 	a := forgeAPI{name: "bitbucket", base: bitbucketAPIBase, message: bitbucketMessage}
 	if token != "" {
-		if email := bitbucketEmail(readSettings()); email != "" {
+		if email := bitbucketEmail(settings.Read()); email != "" {
 			a.auth = "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+token))
 		} else {
 			a.auth = "Bearer " + token

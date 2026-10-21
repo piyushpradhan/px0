@@ -21,12 +21,20 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"px0/internal/settings"
+	"px0/internal/telemetry"
+	"px0/internal/ui"
+	"px0/internal/update"
 )
 
 //go:embed VERSION
 var rawVersion string
 
 var version = strings.TrimSpace(rawVersion)
+
+// posthogKey can be injected at build time: go build -ldflags="-X main.posthogKey=phc_..."
+var posthogKey string
 
 func main() {
 	var (
@@ -58,13 +66,13 @@ func main() {
 
 	if *noColor {
 		f := false
-		uiForcedColor = &f
+		ui.ForcedColor = &f
 	}
 	if *quiet || *wbChild {
-		uiQuiet = true
+		ui.Quiet = true
 	}
 	if *verbose {
-		uiVerbose = true
+		ui.Verbose = true
 	}
 	if *noGit {
 		gitDisabled = true
@@ -76,7 +84,7 @@ func main() {
 	}
 
 	if *doUpdate {
-		if err := runSelfUpdate(version); err != nil {
+		if err := update.RunSelfUpdate(version); err != nil {
 			fatal(err)
 		}
 		return
@@ -128,7 +136,7 @@ func main() {
 	var initialLine int
 	var targetDur time.Duration
 	if isPR {
-		sp := newSpinner(fmt.Sprintf("Preparing PR #%d (%s/%s)...", prTarget.Number, prTarget.Owner, prTarget.Repo), os.Stdout)
+		sp := ui.NewSpinner(fmt.Sprintf("Preparing PR #%d (%s/%s)...", prTarget.Number, prTarget.Owner, prTarget.Repo), os.Stdout)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		// Outside a clone of the PR's repository, use one the workbench knows,
 		// so the checkout is a worktree rather than a fresh clone.
@@ -174,13 +182,13 @@ func main() {
 	tInit := time.Now()
 	ix := NewIndex(root)
 	lsp := newLSPManager(root, !*noLSP)
-	tel := NewTelemetryService(*noTelemetry)
+	tel := telemetry.New(posthogKey, version, *noTelemetry)
 	defer tel.Close("normal")
 
 	configuredBasePath := "/"
 	if *basePathFlag != "" {
 		configuredBasePath = cleanBasePath(*basePathFlag)
-	} else if cfg := readSettings(); cfg.ServerBasePath != nil && *cfg.ServerBasePath != "" {
+	} else if cfg := settings.Read(); cfg.ServerBasePath != nil && *cfg.ServerBasePath != "" {
 		configuredBasePath = cleanBasePath(*cfg.ServerBasePath)
 	}
 
@@ -216,40 +224,40 @@ func main() {
 	}
 
 	url := viewerURL(addr, initialFile, initialLine, configuredBasePath)
-	uiHeading("px0 "+version, nil, os.Stdout)
+	ui.Heading("px0 "+version, nil, os.Stdout)
 	if pr != nil {
 		prTitle := fmt.Sprintf("#%d %s", pr.meta.Number, pr.meta.Title)
 		if pr.meta.Merged {
-			prTitle += " " + paint("[MERGED]", colorWarn, true, os.Stdout)
+			prTitle += " " + ui.Paint("[MERGED]", ui.ColorWarn, true, os.Stdout)
 		}
-		uiKV("PR", prTitle, 11, os.Stdout)
+		ui.KV("PR", prTitle, 11, os.Stdout)
 		if pr.token == "" {
-			uiKV("access", uiDim(fmt.Sprintf("read-only (no %s token: %s to submit reviews)", pr.provider.Info().Label, pr.provider.Info().TokenHint), os.Stdout), 11, os.Stdout)
+			ui.KV("access", ui.Dim(fmt.Sprintf("read-only (no %s token: %s to submit reviews)", pr.provider.Info().Label, pr.provider.Info().TokenHint), os.Stdout), 11, os.Stdout)
 		}
 	}
-	uiKV("workspace", root, 11, os.Stdout)
-	uiKV("url", uiAccent(url, os.Stdout), 11, os.Stdout)
+	ui.KV("workspace", root, 11, os.Stdout)
+	ui.KV("url", ui.Accent(url, os.Stdout), 11, os.Stdout)
 	if *host == "0.0.0.0" {
 		for _, networkURL := range networkURLs(addr, initialFile, initialLine) {
-			uiKV("network", uiAccent(networkURL, os.Stdout), 11, os.Stdout)
+			ui.KV("network", ui.Accent(networkURL, os.Stdout), 11, os.Stdout)
 		}
 	}
-	uiHint("ctrl-c to stop", os.Stdout)
+	ui.Hint("ctrl-c to stop", os.Stdout)
 
-	if uiVerbose {
+	if ui.Verbose {
 		if !isPR {
-			uiStatus("ok", "resolved workspace target", fmtDuration(targetDur), 0, os.Stdout)
+			ui.Status("ok", "resolved workspace target", ui.FmtDuration(targetDur), 0, os.Stdout)
 		}
-		uiStatus("ok", fmt.Sprintf("bound TCP listener on %s", addr), fmtDuration(listenDur), 0, os.Stdout)
-		uiStatus("ok", "initialized HTTP server and services", fmtDuration(initDur), 0, os.Stdout)
+		ui.Status("ok", fmt.Sprintf("bound TCP listener on %s", addr), ui.FmtDuration(listenDur), 0, os.Stdout)
+		ui.Status("ok", "initialized HTTP server and services", ui.FmtDuration(initDur), 0, os.Stdout)
 	}
 
 	// Launch browser immediately without blocking startup.
 	if !*noOpen {
 		tBrowser := time.Now()
 		go openBrowser(url)
-		if uiVerbose {
-			uiStatus("ok", "spawned browser launcher", fmtDuration(time.Since(tBrowser)), 0, os.Stdout)
+		if ui.Verbose {
+			ui.Status("ok", "spawned browser launcher", ui.FmtDuration(time.Since(tBrowser)), 0, os.Stdout)
 		}
 	}
 
@@ -257,18 +265,18 @@ func main() {
 	go func() {
 		ix.Build()
 		n, _, ms := ix.Stats()
-		uiStatus("ok", fmt.Sprintf("indexed %d files", n), fmt.Sprintf("%dms", ms), 0, os.Stdout)
+		ui.Status("ok", fmt.Sprintf("indexed %d files", n), fmt.Sprintf("%dms", ms), 0, os.Stdout)
 		tLSP := time.Now()
 		names := lsp.Available()
 		lspDur := time.Since(tLSP)
 		if len(names) > 0 {
-			if uiVerbose {
-				uiStatus("ok", fmt.Sprintf("discovered language servers: %s", strings.Join(names, ", ")), fmtDuration(lspDur), 0, os.Stdout)
+			if ui.Verbose {
+				ui.Status("ok", fmt.Sprintf("discovered language servers: %s", strings.Join(names, ", ")), ui.FmtDuration(lspDur), 0, os.Stdout)
 			} else {
-				uiBullet(fmt.Sprintf("language servers: %s (started on first use)", strings.Join(names, ", ")), os.Stdout)
+				ui.Bullet(fmt.Sprintf("language servers: %s (started on first use)", strings.Join(names, ", ")), os.Stdout)
 			}
-		} else if uiVerbose {
-			uiStatus("ok", "checked language servers (none installed)", fmtDuration(lspDur), 0, os.Stdout)
+		} else if ui.Verbose {
+			ui.Status("ok", "checked language servers (none installed)", ui.FmtDuration(lspDur), 0, os.Stdout)
 		}
 		if agent != nil {
 			tAgent := time.Now()
@@ -283,17 +291,17 @@ func main() {
 				}
 			}
 			agentDur := time.Since(tAgent)
-			if uiVerbose {
+			if ui.Verbose {
 				if len(found) > 0 {
-					uiStatus("ok", fmt.Sprintf("detected coding harnesses: %s", strings.Join(found, ", ")), fmtDuration(agentDur), 0, os.Stdout)
+					ui.Status("ok", fmt.Sprintf("detected coding harnesses: %s", strings.Join(found, ", ")), ui.FmtDuration(agentDur), 0, os.Stdout)
 				} else {
-					uiStatus("ok", "checked coding harnesses (none found)", fmtDuration(agentDur), 0, os.Stdout)
+					ui.Status("ok", "checked coding harnesses (none found)", ui.FmtDuration(agentDur), 0, os.Stdout)
 				}
 			}
 		}
 
 		tel.Track("session_started", map[string]any{
-			"files_bucket": filesBucket(n),
+			"files_bucket": telemetry.FilesBucket(n),
 			"index_ms":     ms,
 			"has_git":      gitAvailable(root),
 			"has_lsp":      len(lsp.Available()) > 0,
@@ -303,7 +311,7 @@ func main() {
 	// Check for updates in the background once the server is already up, so
 	// px0 never makes a network call before serving the first request.
 	if !*noUpdate {
-		go autoUpdate(version)
+		go update.AutoUpdate(version)
 	}
 
 	// Language servers are children that can hold gigabytes. Shut them down on
@@ -324,7 +332,7 @@ func main() {
 		<-stop
 		interrupted = true
 		fmt.Print("\r")
-		uiStatus("info", "px0 stopped", "", 0, os.Stderr)
+		ui.Status("info", "px0 stopped", "", 0, os.Stderr)
 		go func() {
 			<-stop // Second interrupt forces immediate exit
 			os.Exit(130)
@@ -359,9 +367,9 @@ func main() {
 
 // runWorkbench serves the workbench until interrupted, then stops every
 // workspace it started.
-func runWorkbench(host string, port int, basePathFlag string, open, update bool, childArgs []string) {
+func runWorkbench(host string, port int, basePathFlag string, open, doAutoUpdate bool, childArgs []string) {
 	if u := runningWorkbench(); u != "" {
-		uiStatus("ok", "workbench already running", u, 0, os.Stdout)
+		ui.Status("ok", "workbench already running", u, 0, os.Stdout)
 		if open {
 			openBrowser(u)
 		}
@@ -381,7 +389,7 @@ func runWorkbench(host string, port int, basePathFlag string, open, update bool,
 	basePath := "/"
 	if basePathFlag != "" {
 		basePath = cleanBasePath(basePathFlag)
-	} else if cfg := readSettings(); cfg.ServerBasePath != nil && *cfg.ServerBasePath != "" {
+	} else if cfg := settings.Read(); cfg.ServerBasePath != nil && *cfg.ServerBasePath != "" {
 		basePath = cleanBasePath(*cfg.ServerBasePath)
 	}
 
@@ -397,22 +405,22 @@ func runWorkbench(host string, port int, basePathFlag string, open, update bool,
 	writeWorkbenchLock(viewerURL(net.JoinHostPort("127.0.0.1", boundPort), "", 0, basePath))
 	defer removeWorkbenchLock()
 
-	uiHeading("px0 "+version, nil, os.Stdout)
-	uiKV("workbench", uiAccent(u, os.Stdout), 11, os.Stdout)
+	ui.Heading("px0 "+version, nil, os.Stdout)
+	ui.KV("workbench", ui.Accent(u, os.Stdout), 11, os.Stdout)
 	if host == "0.0.0.0" {
 		for _, networkURL := range networkURLs(addr, "", 0) {
-			uiKV("network", uiAccent(networkURL, os.Stdout), 11, os.Stdout)
+			ui.KV("network", ui.Accent(networkURL, os.Stdout), 11, os.Stdout)
 		}
 	}
 	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		uiStatus("warn", "anyone who can reach this address can browse and open any directory on this machine", "", 0, os.Stdout)
+		ui.Status("warn", "anyone who can reach this address can browse and open any directory on this machine", "", 0, os.Stdout)
 	}
-	uiHint("ctrl-c to stop", os.Stdout)
+	ui.Hint("ctrl-c to stop", os.Stdout)
 	if open {
 		go openBrowser(u)
 	}
-	if update {
-		go autoUpdate(version)
+	if doAutoUpdate {
+		go update.AutoUpdate(version)
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -422,7 +430,7 @@ func runWorkbench(host string, port int, basePathFlag string, open, update bool,
 		<-stop
 		interrupted = true
 		fmt.Print("\r")
-		uiStatus("info", "px0 stopped", "", 0, os.Stderr)
+		ui.Status("info", "px0 stopped", "", 0, os.Stderr)
 		go func() {
 			<-stop
 			os.Exit(130)

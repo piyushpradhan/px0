@@ -1,4 +1,4 @@
-package main
+package telemetry
 
 import (
 	"encoding/json"
@@ -57,9 +57,9 @@ func TestFilesBucket(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		actual := filesBucket(tt.files)
+		actual := FilesBucket(tt.files)
 		if actual != tt.expected {
-			t.Errorf("filesBucket(%d) = %q, want %q", tt.files, actual, tt.expected)
+			t.Errorf("FilesBucket(%d) = %q, want %q", tt.files, actual, tt.expected)
 		}
 	}
 }
@@ -96,7 +96,7 @@ func TestTelemetrySessionLifecycle(t *testing.T) {
 	defer os.Unsetenv("PX0_POSTHOG_KEY")
 	defer os.Unsetenv("PX0_POSTHOG_HOST")
 
-	tel := NewTelemetryService(false)
+	tel := New("", "0.1.0", false)
 	if !tel.enabled {
 		t.Fatal("expected telemetry to be enabled with key set")
 	}
@@ -175,7 +175,7 @@ func TestTelemetrySessionLifecycle(t *testing.T) {
 
 func TestTelemetryDisabledWithoutKey(t *testing.T) {
 	os.Unsetenv("PX0_POSTHOG_KEY")
-	tel := NewTelemetryService(false)
+	tel := New("", "0.1.0", false)
 	if tel.enabled {
 		t.Fatal("expected telemetry disabled without key")
 	}

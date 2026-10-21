@@ -511,9 +511,7 @@ function lineCell(n, reviewable = true) {
   el.className = 'diff-ln';
   if (n !== '' && n !== undefined) {
     el.classList.add('diff-ln-nav');
-    let title = 'Open in file view at line ' + n;
-    const d = doc_();
-    el.title = title;
+    el.title = 'Open in file view at line ' + n;
     const btn = document.createElement('span');
     btn.className = 'line-btn';
     btn.setAttribute('role', 'button');
@@ -566,7 +564,7 @@ function myersDiff(aTokens, bTokens) {
   const trace = [];
 
   for (let d = 0; d <= max; d++) {
-    trace.push(new Int32Array(v));
+    trace.push(v.slice(max - d, max + d + 1));
     for (let k = -d; k <= d; k += 2) {
       let x;
       if (k === -d || (k !== d && v[k - 1 + max] < v[k + 1 + max])) {
@@ -586,29 +584,29 @@ function myersDiff(aTokens, bTokens) {
         for (let step = d; step > 0; step--) {
           const prevV = trace[step];
           const curK = curX - curY;
-          let prevK = (curK === -step || (curK !== step && prevV[curK - 1 + max] < prevV[curK + 1 + max]))
+          let prevK = (curK === -step || (curK !== step && prevV[curK - 1 + step] < prevV[curK + 1 + step]))
             ? curK + 1
             : curK - 1;
-          const prevX = prevV[prevK + max];
+          const prevX = prevV[prevK + step];
           const prevY = prevX - prevK;
 
           while (curX > prevX && curY > prevY && aTokens[curX - 1] === bTokens[curY - 1]) {
-            script.unshift({ type: 'eq', val: aTokens[curX - 1] });
+            script.push({ type: 'eq', val: aTokens[curX - 1] });
             curX--; curY--;
           }
           if (curX > prevX) {
-            script.unshift({ type: 'del', val: aTokens[curX - 1] });
+            script.push({ type: 'del', val: aTokens[curX - 1] });
             curX--;
           } else if (curY > prevY) {
-            script.unshift({ type: 'add', val: bTokens[curY - 1] });
+            script.push({ type: 'add', val: bTokens[curY - 1] });
             curY--;
           }
         }
         while (curX > 0 && curY > 0) {
-          script.unshift({ type: 'eq', val: aTokens[curX - 1] });
+          script.push({ type: 'eq', val: aTokens[curX - 1] });
           curX--; curY--;
         }
-        return script;
+        return script.reverse();
       }
     }
   }

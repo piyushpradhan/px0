@@ -75,7 +75,7 @@ $$\text{first} = \max\left(0, \left\lfloor\frac{\text{scrollTop}}{\text{LH}}\rig
 $$\text{count} = \left\lceil\frac{\text{clientHeight}}{\text{LH}}\right\rceil + 2 \times \text{OVERSCAN} \quad (\text{OVERSCAN} = 24)$$
 $$\text{last} = \min(\text{totalLines}, \text{first} + \text{count})$$
 
-At standard desktop display resolutions, the total number of mounted `.row` elements is capped between 50 and 70 elements.
+At standard desktop display resolutions, the total number of mounted `.row` elements is capped between 50 and 70 elements. `paint()` records the currently mounted window (`renderedDoc`, `renderedFirst`, `renderedLast`, `renderedGen`) so sub-row scroll frames whose `[first, last)` line bounds have not changed skip rebuilding `rowsEl.innerHTML`, and `rowFor(line)` indexes `rowsEl.children[line - renderedFirst - 1]` in $O(1)$.
 
 ### HTML Row Structure
 
@@ -163,6 +163,7 @@ Search match markers (`<mark>`), symbol occurrence markers (`.occ`), and definit
 - Applied exclusively to the ~60 active rows.
 - Uses `document.createTreeWalker(row, NodeFilter.SHOW_TEXT)` to inspect only text nodes within `.c`.
 - Matches are split and wrapped without destroying or invalidating surrounding syntax highlighting tags (`.k`, `.s`, etc.).
+- When holding `Cmd`/`Ctrl` and moving the pointer across tokens (`web/src/hover.js`), `.link` is toggled directly on the hovered token span without triggering a full viewport repaint, and find-in-file minimap markers (`drawMinimap` in `web/src/find.js`) bucket matches into at most 400 vertical slots.
 
 ## 8. Dynamic Chunk Streaming & Whole-File Selection
 ### On-Demand Chunk Fetching (`ensureChunks`)

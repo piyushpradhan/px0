@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"px0/internal/settings"
 )
 
 // PRTarget identifies a pull request or merge request across any git forge.
@@ -215,7 +217,7 @@ type GitProvider interface {
 
 	// ResolveToken looks for an auth token across settings, env vars, and CLI tools.
 	// An empty return means the session stays read-only.
-	ResolveToken(cfg settings, target PRTarget) (token, source string)
+	ResolveToken(cfg settings.Settings, target PRTarget) (token, source string)
 
 	// FetchPR fetches pull/merge request metadata from the forge API.
 	FetchPR(ctx context.Context, target PRTarget, token string) (PRMeta, error)

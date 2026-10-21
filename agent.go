@@ -16,6 +16,10 @@ import (
 	"time"
 
 	"github.com/px0-ai/harness"
+
+	"px0/internal/render"
+	"px0/internal/settings"
+	"px0/internal/ui"
 )
 
 // Editing through a coding harness. px0 never authors a change itself: it
@@ -112,7 +116,7 @@ func (s *lineStreamer) Write(p []byte) (int, error) {
 	if s.buf != nil {
 		s.buf.Write(p)
 	}
-	if s.w == nil || uiQuiet {
+	if s.w == nil || ui.Quiet {
 		return len(p), nil
 	}
 	s.mu.Lock()
@@ -133,7 +137,7 @@ func (s *lineStreamer) Write(p []byte) (int, error) {
 func (s *lineStreamer) Flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.line) > 0 && s.w != nil && !uiQuiet {
+	if len(s.line) > 0 && s.w != nil && !ui.Quiet {
 		fmt.Fprintf(s.w, "  %s %s\n", s.prefix, string(s.line))
 		s.line = s.line[:0]
 	}
@@ -171,7 +175,7 @@ func newAgentManager(root, flagSpec string, lsp *lspManager) (*agentManager, err
 		lsp:    lsp,
 		models: map[string]string{},
 	}
-	s := readSettings()
+	s := settings.Read()
 	if s.Models != nil {
 		for k, v := range s.Models {
 			m.models[k] = v
@@ -309,7 +313,7 @@ func (m *agentManager) Select(name string, modelOpt ...string) error {
 		m.mu.Lock()
 		m.selected, m.args = "", nil
 		m.mu.Unlock()
-		return writeSettings(settings{})
+		return settings.Write(settings.Settings{})
 	}
 
 	reqModel := ""
@@ -324,7 +328,7 @@ func (m *agentManager) Select(name string, modelOpt ...string) error {
 
 	display, args, chosenModel, err := resolveAgentSpec(name, reqModel)
 	if err != nil {
-		uiStatus("err", fmt.Sprintf("agent: failed to select harness %q", name), err.Error(), 0, os.Stdout)
+		ui.Status("err", fmt.Sprintf("agent: failed to select harness %q", name), err.Error(), 0, os.Stdout)
 		return err
 	}
 	m.mu.Lock()
@@ -345,10 +349,10 @@ func (m *agentManager) Select(name string, modelOpt ...string) error {
 	if chosenModel != "" {
 		modelNote = fmt.Sprintf(" (%s)", chosenModel)
 	}
-	uiStatus("ok", "agent", fmt.Sprintf("%s%s", display, modelNote), 0, os.Stdout)
+	ui.Status("ok", "agent", fmt.Sprintf("%s%s", display, modelNote), 0, os.Stdout)
 	// Persist the spec as given, not the display name: a command template
 	// shortens to its binary for display and would not survive the round trip.
-	return writeSettings(settings{Agent: name, Models: savedModels})
+	return settings.Write(settings.Settings{Agent: name, Models: savedModels})
 }
 
 // Job returns a snapshot of job id, or of the most recently started job when
@@ -471,7 +475,7 @@ func (m *agentManager) StartBatch(items []agentBatchItem, force bool) (*agentJob
 		}
 		for j := 0; j < i; j++ {
 			if items[i].Path == items[j].Path && items[i].L1 <= items[j].L2 && items[j].L1 <= items[i].L2 {
-				uiStatus("warn", "agent", fmt.Sprintf("batch edit refused: overlapping edits on %s (%s and %s)", items[i].Path, lineRef(items[i].L1, items[i].L2), lineRef(items[j].L1, items[j].L2)), 0, os.Stdout)
+				ui.Status("warn", "agent", fmt.Sprintf("batch edit refused: overlapping edits on %s (%s and %s)", items[i].Path, lineRef(items[i].L1, items[i].L2), lineRef(items[j].L1, items[j].L2)), 0, os.Stdout)
 				return nil, fmt.Errorf("overlapping edits in batch on %s (%s and %s)", items[i].Path, lineRef(items[i].L1, items[i].L2), lineRef(items[j].L1, items[j].L2))
 			}
 		}
@@ -480,7 +484,7 @@ func (m *agentManager) StartBatch(items []agentBatchItem, force bool) (*agentJob
 	m.mu.Lock()
 	if m.args == nil {
 		m.mu.Unlock()
-		uiStatus("err", "agent", "edit dispatch refused: no coding harness selected", 0, os.Stdout)
+		ui.Status("err", "agent", "edit dispatch refused: no coding harness selected", 0, os.Stdout)
 		return nil, errAgentNone
 	}
 	for _, it := range items {
@@ -488,7 +492,7 @@ func (m *agentManager) StartBatch(items []agentBatchItem, force bool) (*agentJob
 			m.mu.Unlock()
 			loc := fmt.Sprintf("%s:%s", it.Path, lineRef(it.L1, it.L2))
 			msg := fmt.Sprintf("an edit is already running on %s (job #%d with %s)", loc, blocking.ID, blocking.Harness)
-			uiStatus("warn", "agent", "edit dispatch refused: "+msg, 0, os.Stdout)
+			ui.Status("warn", "agent", "edit dispatch refused: "+msg, 0, os.Stdout)
 			return nil, fmt.Errorf("%w: %s", errAgentBusy, msg)
 		}
 	}
@@ -500,7 +504,7 @@ func (m *agentManager) StartBatch(items []agentBatchItem, force bool) (*agentJob
 	for i, it := range items {
 		snippet, err := readLineRange(it.Abs, it.L1, it.L2)
 		if err != nil {
-			uiStatus("err", "agent", fmt.Sprintf("failed reading snippet for %s:%s: %s", it.Path, lineRef(it.L1, it.L2), err.Error()), 0, os.Stdout)
+			ui.Status("err", "agent", fmt.Sprintf("failed reading snippet for %s:%s: %s", it.Path, lineRef(it.L1, it.L2), err.Error()), 0, os.Stdout)
 			return nil, err
 		}
 		prepared[i] = itemWithSnippet{item: it, snippet: snippet}
@@ -514,7 +518,7 @@ func (m *agentManager) StartBatch(items []agentBatchItem, force bool) (*agentJob
 			m.mu.Unlock()
 			loc := fmt.Sprintf("%s:%s", it.Path, lineRef(it.L1, it.L2))
 			msg := fmt.Sprintf("an edit is already running on %s (job #%d with %s)", loc, blocking.ID, blocking.Harness)
-			uiStatus("warn", "agent", "edit dispatch refused: "+msg, 0, os.Stdout)
+			ui.Status("warn", "agent", "edit dispatch refused: "+msg, 0, os.Stdout)
 			return nil, fmt.Errorf("%w: %s", errAgentBusy, msg)
 		}
 	}
@@ -580,9 +584,9 @@ func (m *agentManager) StartBatch(items []agentBatchItem, force bool) (*agentJob
 	m.mu.Unlock()
 
 	if len(items) == 1 {
-		uiStatus("step", "agent", fmt.Sprintf("#%d %s%s · %s:%s  %q", job.ID, name, modelStr, items[0].Path, lineRef(items[0].L1, items[0].L2), items[0].Instruction), 0, os.Stdout)
+		ui.Status("step", "agent", fmt.Sprintf("#%d %s%s · %s:%s  %q", job.ID, name, modelStr, items[0].Path, lineRef(items[0].L1, items[0].L2), items[0].Instruction), 0, os.Stdout)
 	} else {
-		uiStatus("step", "agent", fmt.Sprintf("#%d %s%s · batch %d edits across %s", job.ID, name, modelStr, len(items), displayPath), 0, os.Stdout)
+		ui.Status("step", "agent", fmt.Sprintf("#%d %s%s · batch %d edits across %s", job.ID, name, modelStr, len(items), displayPath), 0, os.Stdout)
 	}
 
 	var prompt string
@@ -604,7 +608,7 @@ func (m *agentManager) StartPrompt(label, prompt string) (*agentJob, error) {
 	m.mu.Lock()
 	if m.args == nil {
 		m.mu.Unlock()
-		uiStatus("err", "agent", "prompt dispatch refused: no coding harness selected", 0, os.Stdout)
+		ui.Status("err", "agent", "prompt dispatch refused: no coding harness selected", 0, os.Stdout)
 		return nil, errAgentNone
 	}
 	args := m.args
@@ -633,7 +637,7 @@ func (m *agentManager) StartPrompt(label, prompt string) (*agentJob, error) {
 	}
 	m.mu.Unlock()
 
-	uiStatus("step", "agent", fmt.Sprintf("#%d %s%s · %s", job.ID, name, modelStr, label), 0, os.Stdout)
+	ui.Status("step", "agent", fmt.Sprintf("#%d %s%s · %s", job.ID, name, modelStr, label), 0, os.Stdout)
 
 	go m.run(ctx, cancel, job, args, prompt)
 	return m.Job(job.ID), nil
@@ -651,14 +655,14 @@ func (m *agentManager) run(ctx context.Context, cancel context.CancelFunc, job *
 		m.mu.Unlock()
 	}()
 
-	if uiVerbose {
-		uiVerbosePrompt(job.ID, job.Harness, prompt, os.Stdout)
+	if ui.Verbose {
+		ui.VerbosePrompt(job.ID, job.Harness, prompt, os.Stdout)
 	}
 
 	before := worktreeSnapshot(m.root)
 
-	stdoutStreamer := newLineStreamer(job.out, uiFaint("│", os.Stdout), os.Stdout)
-	stderrStreamer := newLineStreamer(job.stderr, uiDim("│", os.Stdout), os.Stdout)
+	stdoutStreamer := newLineStreamer(job.out, ui.Faint("│", os.Stdout), os.Stdout)
+	stderrStreamer := newLineStreamer(job.stderr, ui.Dim("│", os.Stdout), os.Stdout)
 
 	res := harness.Run(ctx, harness.Command{Name: job.Harness, Args: template}, prompt, harness.Options{
 		Dir:      m.root,
@@ -685,14 +689,14 @@ func (m *agentManager) run(ctx context.Context, cancel context.CancelFunc, job *
 	stderrOutput := job.stderr.String()
 	m.mu.Unlock()
 
-	durStr := fmtDuration(time.Duration(job.Ms) * time.Millisecond)
+	durStr := ui.FmtDuration(time.Duration(job.Ms) * time.Millisecond)
 	if err != nil {
-		uiStatus("err", "agent", fmt.Sprintf("#%d %s failed in %s: %s", job.ID, job.Harness, durStr, err.Error()), 0, os.Stdout)
+		ui.Status("err", "agent", fmt.Sprintf("#%d %s failed in %s: %s", job.ID, job.Harness, durStr, err.Error()), 0, os.Stdout)
 		if trimmedErr := strings.TrimSpace(stderrOutput); trimmedErr != "" {
-			uiKV("harness stderr", trimmedErr, 0, os.Stdout)
+			ui.KV("harness stderr", trimmedErr, 0, os.Stdout)
 		}
 		if trimmedOut := strings.TrimSpace(stdoutOutput); trimmedOut != "" {
-			uiKV("harness stdout", trimmedOut, 0, os.Stdout)
+			ui.KV("harness stdout", trimmedOut, 0, os.Stdout)
 		}
 	} else {
 		var summary string
@@ -704,10 +708,10 @@ func (m *agentManager) run(ctx context.Context, cancel context.CancelFunc, job *
 		default:
 			summary = fmt.Sprintf("%d files changed: %s", len(changed), strings.Join(changed, ", "))
 		}
-		uiStatus("ok", "agent", fmt.Sprintf("#%d %s · %s  (%s)", job.ID, job.Harness, durStr, summary), 0, os.Stdout)
+		ui.Status("ok", "agent", fmt.Sprintf("#%d %s · %s  (%s)", job.ID, job.Harness, durStr, summary), 0, os.Stdout)
 		if len(changed) == 0 && job.Tracked {
 			if trimmedErr := strings.TrimSpace(stderrOutput); trimmedErr != "" {
-				uiKV("harness stderr", trimmedErr, 0, os.Stdout)
+				ui.KV("harness stderr", trimmedErr, 0, os.Stdout)
 			}
 		}
 	}
@@ -722,7 +726,7 @@ func (m *agentManager) run(ctx context.Context, cancel context.CancelFunc, job *
 func (m *agentManager) settle(changed []string) {
 	for _, rel := range changed {
 		abs := filepath.Join(m.root, filepath.FromSlash(rel))
-		Evict(abs)
+		render.Evict(abs)
 		if m.lsp != nil {
 			m.lsp.CloseDoc(abs, rel)
 		}
@@ -756,7 +760,7 @@ func (m *agentManager) CancelJob(id int64) bool {
 	if id != 0 {
 		j := m.jobs[id]
 		if j != nil && j.Running && j.cancel != nil {
-			uiStatus("warn", "agent", fmt.Sprintf("cancelled in-flight run with %s (job %d)", j.Harness, j.ID), 0, os.Stdout)
+			ui.Status("warn", "agent", fmt.Sprintf("cancelled in-flight run with %s (job %d)", j.Harness, j.ID), 0, os.Stdout)
 			j.Running = false
 			j.Error = "cancelled"
 			cancel := j.cancel
@@ -771,7 +775,7 @@ func (m *agentManager) CancelJob(id int64) bool {
 		if !j.Running || j.cancel == nil {
 			continue
 		}
-		uiStatus("warn", "agent", fmt.Sprintf("cancelled in-flight run with %s (job %d)", j.Harness, j.ID), 0, os.Stdout)
+		ui.Status("warn", "agent", fmt.Sprintf("cancelled in-flight run with %s (job %d)", j.Harness, j.ID), 0, os.Stdout)
 		j.Running = false
 		j.Error = "cancelled"
 		cancel := j.cancel
@@ -1044,7 +1048,7 @@ func (s *Server) handleAgentHarnesses(w http.ResponseWriter, r *http.Request) {
 		"selected":  s.agent.Name(),
 		"model":     s.agent.Model(),
 		"pinned":    s.agent.Pinned(),
-		"settings":  settingsPath(),
+		"settings":  settings.Path(),
 	})
 }
 
@@ -1070,7 +1074,7 @@ func (s *Server) handleAgentSelect(w http.ResponseWriter, r *http.Request) {
 		"selected":  s.agent.Name(),
 		"model":     s.agent.Model(),
 		"pinned":    s.agent.Pinned(),
-		"settings":  settingsPath(),
+		"settings":  settings.Path(),
 	})
 }
 

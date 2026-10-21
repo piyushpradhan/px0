@@ -13,6 +13,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"px0/internal/ignore"
+	"px0/internal/render"
+	"px0/internal/symbols"
 )
 
 // Match carries the hit already split into the text before it, the matched
@@ -48,21 +52,42 @@ func snip(line []byte, from, to int) Match {
 	if to > len(line) {
 		to = len(line)
 	}
-	pre, mid, post := string(line[:from]), string(line[from:to]), string(line[to:])
+	preBytes := bytes.TrimLeft(line[:from], " \t")
+	midBytes := line[from:to]
+	postBytes := bytes.TrimRight(line[to:], " \t")
 
-	trimmed := strings.TrimLeft(pre, " \t")
-	if trimmed != pre {
-		pre = trimmed
+	// Fast path: since utf8.RuneCount <= byte length, if byte lengths fit within
+	// snipLead and snipMax, no rune counting or []rune slicing is needed.
+	if len(preBytes) <= snipLead && len(preBytes)+len(midBytes)+len(postBytes) <= snipMax {
+		return Match{
+			Pre:  string(preBytes),
+			Mid:  string(midBytes),
+			Post: string(postBytes),
+		}
 	}
-	if n := utf8.RuneCountInString(pre); n > snipLead {
-		r := []rune(pre)
-		pre = "…" + string(r[n-snipKeep:])
+
+	pre, mid, post := string(preBytes), string(midBytes), string(postBytes)
+	preRunes := len(pre)
+	if preRunes > snipLead {
+		preRunes = utf8.RuneCountInString(pre)
+		if preRunes > snipLead {
+			r := []rune(pre)
+			pre = "…" + string(r[preRunes-snipKeep:])
+			preRunes = 1 + snipKeep
+		}
 	}
-	if n := utf8.RuneCountInString(mid); n > snipMax {
-		mid = string([]rune(mid)[:snipMax]) + "…"
+	midRunes := len(mid)
+	if midRunes > snipMax {
+		midRunes = utf8.RuneCountInString(mid)
+		if midRunes > snipMax {
+			mid = string([]rune(mid)[:snipMax]) + "…"
+			midRunes = snipMax + 1
+		}
+	} else if len(preBytes)+len(midBytes)+len(postBytes) > snipMax {
+		midRunes = utf8.RuneCountInString(mid)
 	}
-	if budget := snipMax - utf8.RuneCountInString(pre) - utf8.RuneCountInString(mid); budget > 0 {
-		if utf8.RuneCountInString(post) > budget {
+	if budget := snipMax - preRunes - midRunes; budget > 0 {
+		if len(post) > budget && utf8.RuneCountInString(post) > budget {
 			post = string([]rune(post)[:budget]) + "…"
 		}
 	} else {
@@ -95,11 +120,14 @@ const searchFileCap = 8 << 20 // do not grep blobs (cap at 8MB)
 // searcher compiles search options into precomputed patterns, byte slices,
 // and glob rules for high-speed parallel file grepping.
 type searcher struct {
-	opts   SearchOpts
-	re     *regexp.Regexp            // nil for the literal fast path
-	lit    []byte                    // literal needle, already case-folded if needed
-	glob   *rule                     // path filter, nil when every file is in scope
-	defRes map[string]*regexp.Regexp // ext -> declaration pattern for Query
+	opts      SearchOpts
+	re        *regexp.Regexp            // nil for the literal fast path
+	lit       []byte                    // literal needle (or prefilter), already case-folded if needed
+	glob      *ignore.Rule              // path filter, nil when every file is in scope
+	defRes    map[string]*regexp.Regexp // legacy precompiled map (if set)
+	defQueryQ string                    // quoted identifier for lazy per-family decl regex compilation
+	defMu     sync.Mutex
+	defByFam  map[string]*regexp.Regexp
 }
 
 // newSearcher creates and pre-compiles regexes and literal needles for search execution.
@@ -108,7 +136,7 @@ func newSearcher(o SearchOpts) (*searcher, error) {
 	if o.Glob != "" {
 		// Match through the rule, not its regexp: a plain pattern such as
 		// "server.go" or "web/app.js" is answered without one at all.
-		if r, ok := compilePattern(o.Glob); ok {
+		if r, ok := ignore.CompilePattern(o.Glob); ok {
 			s.glob = &r
 		}
 	}
@@ -116,6 +144,11 @@ func newSearcher(o SearchOpts) (*searcher, error) {
 		pat := o.Query
 		if !o.Regex {
 			pat = regexp.QuoteMeta(pat)
+			n := o.Query
+			if !o.Case {
+				n = asciiLowerString(n)
+			}
+			s.lit = []byte(n)
 		}
 		if o.Word {
 			pat = `\b(?:` + pat + `)\b`
@@ -128,6 +161,11 @@ func newSearcher(o SearchOpts) (*searcher, error) {
 			return nil, err
 		}
 		s.re = re
+		if len(s.lit) == 0 && o.Case {
+			if pfx, _ := re.LiteralPrefix(); pfx != "" {
+				s.lit = []byte(pfx)
+			}
+		}
 	} else {
 		n := o.Query
 		if !o.Case {
@@ -135,10 +173,87 @@ func newSearcher(o SearchOpts) (*searcher, error) {
 		}
 		s.lit = []byte(n)
 	}
-	if o.classifyDefs {
-		s.defRes = declPatterns(o.Query)
+	if o.classifyDefs && symbols.IdentRe.MatchString(o.Query) {
+		s.defQueryQ = regexp.QuoteMeta(o.Query)
+		s.defByFam = make(map[string]*regexp.Regexp, 4)
 	}
 	return s, nil
+}
+
+func (s *searcher) defRegexForExt(ext string) *regexp.Regexp {
+	if s.defRes != nil {
+		return s.defRes[ext]
+	}
+	if s.defQueryQ == "" {
+		return nil
+	}
+	fam := symbols.FamilyFor(ext)
+	s.defMu.Lock()
+	defer s.defMu.Unlock()
+	if re, ok := s.defByFam[fam]; ok {
+		return re
+	}
+	re := symbols.CompileDeclFamily(fam, s.defQueryQ)
+	s.defByFam[fam] = re
+	return re
+}
+
+// containsFoldASCII reports whether lit (already ASCII-lowercased) occurs in data
+// under ASCII case-folding, without allocating or copying data.
+func containsFoldASCII(data, lit []byte) bool {
+	if len(lit) == 0 {
+		return true
+	}
+	if len(data) < len(lit) {
+		return false
+	}
+	b0 := lit[0]
+	var u0 byte
+	hasUpper := b0 >= 'a' && b0 <= 'z'
+	if hasUpper {
+		u0 = b0 - ('a' - 'A')
+	}
+	limit := len(data) - len(lit)
+	for i := 0; i <= limit; {
+		if !hasUpper {
+			idx := bytes.IndexByte(data[i:limit+1], b0)
+			if idx < 0 {
+				return false
+			}
+			i += idx
+		} else {
+			// Advance to next occurrence of b0 or u0
+			found := -1
+			sub := data[i : limit+1]
+			for j := 0; j < len(sub); j++ {
+				c := sub[j]
+				if c == b0 || c == u0 {
+					found = j
+					break
+				}
+			}
+			if found < 0 {
+				return false
+			}
+			i += found
+		}
+		match := true
+		for k := 1; k < len(lit); k++ {
+			c := data[i+k]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != lit[k] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+		i++
+	}
+	return false
 }
 
 // workBuf holds the per-worker scratch that lets a search read and fold a whole
@@ -223,18 +338,38 @@ func readInto(path string, buf *[]byte, size int64) ([]byte, error) {
 
 // scan finds every match in one file's bytes.
 func (s *searcher) scan(data []byte, ext string, max int, w *workBuf) []Match {
+	// Cheap whole-file reject before paying for full-file lowercasing or line splitting.
+	if len(s.lit) > 0 {
+		if s.opts.Case {
+			if !bytes.Contains(data, s.lit) {
+				return nil
+			}
+		} else {
+			if !containsFoldASCII(data, s.lit) {
+				return nil
+			}
+		}
+	}
+
 	hay := data
 	if s.re == nil && !s.opts.Case {
 		hay = asciiLower(&w.lower, data)
 	}
-	// Cheap whole-file reject before paying for line splitting.
-	if s.re == nil && !bytes.Contains(hay, s.lit) {
-		return nil
-	}
 
 	var out []Match
 	lineNo, start := 1, 0
-	defRe := s.defRes[ext]
+	var defRe *regexp.Regexp
+	defReResolved := false
+	getDefRe := func() *regexp.Regexp {
+		if !defReResolved {
+			defReResolved = true
+			if s.opts.classifyDefs || s.defRes != nil {
+				defRe = s.defRegexForExt(strings.ToLower(ext))
+			}
+		}
+		return defRe
+	}
+
 	for start <= len(data) {
 		end := bytes.IndexByte(data[start:], '\n')
 		var lineEnd int
@@ -245,30 +380,38 @@ func (s *searcher) scan(data []byte, ext string, max int, w *workBuf) []Match {
 		}
 		line, hLine := data[start:lineEnd], hay[start:lineEnd]
 
-		var locs [][]int
 		if s.re != nil {
-			locs = s.re.FindAllIndex(line, max)
-		} else {
-			for off := 0; ; {
-				i := bytes.Index(hLine[off:], s.lit)
-				if i < 0 {
-					break
-				}
-				locs = append(locs, []int{off + i, off + i + len(s.lit)})
-				off += i + len(s.lit)
-				if len(locs) >= max {
-					break
+			locs := s.re.FindAllIndex(line, max)
+			if len(locs) > 0 {
+				re := getDefRe()
+				isDef := re != nil && re.Match(line)
+				for _, l := range locs {
+					m := snip(line, l[0], l[1])
+					m.Line, m.Def = lineNo, isDef
+					out = append(out, m)
+					if len(out) >= max {
+						return out
+					}
 				}
 			}
-		}
-		if len(locs) > 0 {
-			isDef := defRe != nil && defRe.Match(line)
-			for _, l := range locs {
-				m := snip(line, l[0], l[1])
-				m.Line, m.Def = lineNo, isDef
-				out = append(out, m)
-				if len(out) >= max {
-					return out
+		} else {
+			off := 0
+			i := bytes.Index(hLine, s.lit)
+			if i >= 0 {
+				re := getDefRe()
+				isDef := re != nil && re.Match(line)
+				for {
+					m := snip(line, off+i, off+i+len(s.lit))
+					m.Line, m.Def = lineNo, isDef
+					out = append(out, m)
+					if len(out) >= max {
+						return out
+					}
+					off += i + len(s.lit)
+					i = bytes.Index(hLine[off:], s.lit)
+					if i < 0 {
+						break
+					}
 				}
 			}
 		}
@@ -341,13 +484,17 @@ func SearchContext(ctx context.Context, ix *Index, o SearchOpts) ([]FileMatches,
 					continue
 				}
 				data, err := readInto(filepath.Join(root, filepath.FromSlash(f.Path)), &w.read, f.Size)
-				if err != nil || isBinary(data) {
+				if err != nil || render.IsBinary(data) {
 					continue
 				}
 				if ctx.Err() != nil {
 					continue
 				}
-				m := s.scan(data, strings.ToLower(filepath.Ext(f.Path)), o.MaxPerFil, w)
+				var ext string
+				if s.opts.classifyDefs || s.defRes != nil {
+					ext = filepath.Ext(f.Path)
+				}
+				m := s.scan(data, ext, o.MaxPerFil, w)
 				w.release()
 				if len(m) == 0 {
 					continue
@@ -410,6 +557,6 @@ func unindexedTarget(root string, files []FileEntry, glob string) (FileEntry, bo
 	name := rel[strings.LastIndexByte(rel, '/')+1:]
 	return FileEntry{
 		Path: rel, Name: name, Size: st.Size(),
-		lower: strings.ToLower(rel), nameStart: len(rel) - len(name),
+		Lower: strings.ToLower(rel), NameStart: len(rel) - len(name),
 	}, true
 }

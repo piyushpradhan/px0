@@ -1,18 +1,22 @@
-package main
+package settings
 
 import (
-	"bytes"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
+func isolateSettings(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	return dir
+}
+
 func TestSettingsDefaults(t *testing.T) {
 	isolateSettings(t)
-	m := readMergedSettingsMap()
+	m := ReadMergedMap()
 	if m["editor.fontSize"] != 13.5 {
 		t.Errorf("expected editor.fontSize 13.5, got %v", m["editor.fontSize"])
 	}
@@ -52,7 +56,7 @@ func TestSettingsAutoReveal(t *testing.T) {
 	isolateSettings(t)
 
 	// Defaults to true
-	m := readMergedSettingsMap()
+	m := ReadMergedMap()
 	if m["explorer.autoReveal"] != true {
 		t.Fatalf("expected default explorer.autoReveal true, got %v", m["explorer.autoReveal"])
 	}
@@ -61,19 +65,19 @@ func TestSettingsAutoReveal(t *testing.T) {
 	}
 
 	// Update via explorer.autoReveal = false
-	err := updateSettingsMap(map[string]any{
+	err := UpdateMap(map[string]any{
 		"explorer.autoReveal": false,
 	})
 	if err != nil {
-		t.Fatalf("updateSettingsMap failed: %v", err)
+		t.Fatalf("UpdateMap failed: %v", err)
 	}
 
-	s := readSettings()
+	s := Read()
 	if s.ExplorerAutoReveal == nil || *s.ExplorerAutoReveal != false {
 		t.Fatalf("expected ExplorerAutoReveal false, got %v", s.ExplorerAutoReveal)
 	}
 
-	m = readMergedSettingsMap()
+	m = ReadMergedMap()
 	if m["explorer.autoReveal"] != false {
 		t.Errorf("expected explorer.autoReveal false, got %v", m["explorer.autoReveal"])
 	}
@@ -82,19 +86,19 @@ func TestSettingsAutoReveal(t *testing.T) {
 	}
 
 	// Update via explorer.autoRelveal = true
-	err = updateSettingsMap(map[string]any{
+	err = UpdateMap(map[string]any{
 		"explorer.autoRelveal": true,
 	})
 	if err != nil {
-		t.Fatalf("updateSettingsMap failed: %v", err)
+		t.Fatalf("UpdateMap failed: %v", err)
 	}
 
-	s = readSettings()
+	s = Read()
 	if s.ExplorerAutoReveal == nil || *s.ExplorerAutoReveal != true {
 		t.Fatalf("expected ExplorerAutoReveal true, got %v", s.ExplorerAutoReveal)
 	}
 
-	m = readMergedSettingsMap()
+	m = ReadMergedMap()
 	if m["explorer.autoReveal"] != true {
 		t.Errorf("expected explorer.autoReveal true, got %v", m["explorer.autoReveal"])
 	}
@@ -107,28 +111,28 @@ func TestSettingsPreserveNonAgentValues(t *testing.T) {
 	cfg := isolateSettings(t)
 
 	// Step 1: Update editor settings
-	err := updateSettingsMap(map[string]any{
+	err := UpdateMap(map[string]any{
 		"editor.fontSize":      16.0,
 		"workbench.colorTheme": "gruvbox-dark",
 		"custom.property":      "hello",
 	})
 	if err != nil {
-		t.Fatalf("updateSettingsMap failed: %v", err)
+		t.Fatalf("UpdateMap failed: %v", err)
 	}
 
-	// Step 2: Agent selects a harness (which calls writeSettings)
-	err = writeSettings(settings{
+	// Step 2: Agent selects a harness (which calls Write)
+	err = Write(Settings{
 		Agent: "claude",
 		Models: map[string]string{
 			"claude": "sonnet",
 		},
 	})
 	if err != nil {
-		t.Fatalf("writeSettings failed: %v", err)
+		t.Fatalf("Write failed: %v", err)
 	}
 
 	// Step 3: Verify editor settings were NOT wiped
-	m := readMergedSettingsMap()
+	m := ReadMergedMap()
 	if m["editor.fontSize"] != 16.0 {
 		t.Errorf("editor.fontSize was overwritten: got %v, want 16", m["editor.fontSize"])
 	}
@@ -156,113 +160,43 @@ func TestSettingsPreserveNonAgentValues(t *testing.T) {
 	}
 }
 
-func TestSettingsAPIEndpoints(t *testing.T) {
-	isolateSettings(t)
-	root := t.TempDir()
-	srv := agentServer(t, root, "echo")
-
-	// 1. GET /api/settings
-	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/settings failed: code %d, body: %s", rec.Code, rec.Body.String())
-	}
-	var getResp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &getResp); err != nil {
-		t.Fatalf("invalid GET json response: %v", err)
-	}
-	if _, ok := getResp["schema"]; !ok {
-		t.Errorf("missing schema in GET /api/settings response")
-	}
-
-	// 2. POST /api/settings with key/value updates
-	payload := map[string]any{
-		"editor.tabSize":       2,
-		"diffEditor.renderSideBySide": false,
-	}
-	b, _ := json.Marshal(payload)
-	postReq := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader(b))
-	postReq.Host = "127.0.0.1:7777"
-	postReq.Header.Set("Origin", "http://127.0.0.1:7777")
-	postReq.Header.Set("Content-Type", "application/json")
-	postRec := httptest.NewRecorder()
-	srv.ServeHTTP(postRec, postReq)
-	if postRec.Code != http.StatusOK {
-		t.Fatalf("POST /api/settings failed: code %d, body: %s", postRec.Code, postRec.Body.String())
-	}
-
-	// 3. Verify changes persisted
-	m := readMergedSettingsMap()
-	if m["editor.tabSize"] != float64(2) && m["editor.tabSize"] != 2 {
-		t.Errorf("expected editor.tabSize 2, got %v", m["editor.tabSize"])
-	}
-	if m["diffEditor.renderSideBySide"] != false {
-		t.Errorf("expected diffEditor.renderSideBySide false, got %v", m["diffEditor.renderSideBySide"])
-	}
-
-	// 4. POST /api/settings with raw JSON
-	rawPayload := map[string]any{
-		"raw": "{\n  \"editor.fontSize\": 15,\n  \"workbench.colorTheme\": \"nord\"\n}\n",
-	}
-	rb, _ := json.Marshal(rawPayload)
-	rawReq := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader(rb))
-	rawReq.Host = "127.0.0.1:7777"
-	rawReq.Header.Set("Origin", "http://127.0.0.1:7777")
-	rawReq.Header.Set("Content-Type", "application/json")
-	rawRec := httptest.NewRecorder()
-	srv.ServeHTTP(rawRec, rawReq)
-	if rawRec.Code != http.StatusOK {
-		t.Fatalf("POST /api/settings raw failed: code %d, body: %s", rawRec.Code, rawRec.Body.String())
-	}
-
-	m2 := readMergedSettingsMap()
-	if m2["editor.fontSize"] != float64(15) && m2["editor.fontSize"] != 15 {
-		t.Errorf("expected editor.fontSize 15 from raw, got %v", m2["editor.fontSize"])
-	}
-	if m2["workbench.colorTheme"] != "nord" {
-		t.Errorf("expected workbench.colorTheme nord from raw, got %v", m2["workbench.colorTheme"])
-	}
-}
-
 func TestSettingsBasePath(t *testing.T) {
 	isolateSettings(t)
 
-	// Defaults to nil in readSettings()
-	s := readSettings()
+	// Defaults to nil in Read()
+	s := Read()
 	if s.ServerBasePath != nil {
 		t.Errorf("expected default ServerBasePath to be nil, got %v", *s.ServerBasePath)
 	}
 
 	// Update via settings map
-	err := updateSettingsMap(map[string]any{
+	err := UpdateMap(map[string]any{
 		"server.basePath": "/rev-123/",
 	})
 	if err != nil {
-		t.Fatalf("updateSettingsMap failed: %v", err)
+		t.Fatalf("UpdateMap failed: %v", err)
 	}
 
-	s = readSettings()
+	s = Read()
 	if s.ServerBasePath == nil || *s.ServerBasePath != "/rev-123/" {
 		t.Errorf("expected ServerBasePath /rev-123/, got %v", s.ServerBasePath)
 	}
 
-	m := readMergedSettingsMap()
+	m := ReadMergedMap()
 	if m["server.basePath"] != "/rev-123/" {
 		t.Errorf("expected merged server.basePath /rev-123/, got %v", m["server.basePath"])
 	}
 
 	// Fallback when keyed as basePath
-	err = updateSettingsMap(map[string]any{
+	err = UpdateMap(map[string]any{
 		"basePath": "/rev-456/",
 	})
 	if err != nil {
-		t.Fatalf("updateSettingsMap failed: %v", err)
+		t.Fatalf("UpdateMap failed: %v", err)
 	}
 
-	s = readSettings()
+	s = Read()
 	if s.ServerBasePath == nil || *s.ServerBasePath != "/rev-456/" {
 		t.Errorf("expected ServerBasePath /rev-456/ from fallback, got %v", s.ServerBasePath)
 	}
 }
-
