@@ -1,15 +1,19 @@
-.PHONY: all build web build-web test dist publish clean help
+.PHONY: all build update install web build-web test dist publish clean help
 
 VERSION ?= $(shell cat VERSION 2>/dev/null | tr -d ' \r\n')
 # Support 'make publish 0.2.0' where target argument is passed as next goal
-VERSION_ARG := $(filter-out publish,$(MAKECMDGOALS))
-ifeq ($(strip $(VERSION_ARG)),)
-  TARGET_VERSION := $(VERSION)
+ifeq ($(firstword $(MAKECMDGOALS)),publish)
+  VERSION_ARG := $(word 2,$(MAKECMDGOALS))
+  ifneq ($(strip $(VERSION_ARG)),)
+    TARGET_VERSION := $(strip $(VERSION_ARG))
+    # Treat extra goal as no-op so make doesn't attempt to build it
+    %:
+		@:
+  else
+    TARGET_VERSION := $(VERSION)
+  endif
 else
-  TARGET_VERSION := $(strip $(VERSION_ARG))
-  # Treat extra goal as no-op so make doesn't attempt to build it
-  %:
-	@:
+  TARGET_VERSION := $(VERSION)
 endif
 
 # Clean leading 'v' from version string if present
@@ -25,7 +29,9 @@ all: build
 
 help:
 	@echo "px0 make targets:"
-	@echo "  make build             - build px0 binary for current platform (optional: POSTHOG_KEY=phc_...)"
+	@echo "  make build             - build px0 binary and replace local installed binary"
+	@echo "  make update            - alias for make build (build and replace installed binary)"
+	@echo "  make install           - install px0 to ~/.local/bin/px0 (or INSTALL_PATH=...)"
 	@echo "  make web               - bundle web assets (JS/CSS/themes)"
 	@echo "  make test              - run go test suite"
 	@echo "  make test-short        - run fast unit tests (short mode)"
@@ -49,6 +55,12 @@ build: web
 	@echo "Building px0 for local system..."
 	go build -trimpath -ldflags="$(LDFLAGS)" -o px0 .
 	@echo "Built ./px0 ($$(du -h px0 | cut -f1))"
+	@./scripts/replace-local.sh ./px0
+
+update: build
+
+install: build
+	@INSTALL_PATH=$${INSTALL_PATH:-$(HOME)/.local/bin/px0} ./scripts/replace-local.sh ./px0
 
 test: web
 	go test -v ./...
