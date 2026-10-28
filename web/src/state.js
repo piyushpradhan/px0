@@ -15,7 +15,7 @@ export const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', 
 
 const request = async (method, path, params, opts = {}) => {
   const relPath = path.startsWith('/') ? path.slice(1) : path;
-  const base = document.baseURI || (location.origin + '/');
+  const base = document.baseURI || (typeof location !== 'undefined' && (location.origin ? location.origin + '/' : location.href)) || 'http://localhost:7777/';
   const u = new URL(relPath, base);
   /** @type {RequestInit} */
   const fetchOpts = { method, ...opts };
@@ -33,6 +33,10 @@ const request = async (method, path, params, opts = {}) => {
         if (v !== undefined && v !== '') u.searchParams.set(k, v);
       }
     }
+  }
+
+  if (!fetchOpts.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    fetchOpts.signal = AbortSignal.timeout(opts.timeout || 30000);
   }
 
   const r = await fetch(u, fetchOpts);

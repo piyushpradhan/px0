@@ -83,6 +83,8 @@ type Server struct {
 
 	workbenchURL string // the workbench's base path, when this px0 is one of its workspaces
 
+	reviewFlow *ReviewWorkflowManager
+
 	lastReq atomic.Int64 // unix nanos of the most recent request
 
 	// streamsDone closes when the HTTP server starts shutting down, so event
@@ -205,6 +207,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/threads/delete"), s.handleThreadDelete)
 	s.mux.HandleFunc(s.routePath("/api/threads/revert"), s.handleThreadRevert)
 	s.mux.HandleFunc(s.routePath("/api/threads/stream"), s.handleThreadStream)
+	s.mux.HandleFunc(s.routePath("/api/review-workflow/config"), s.handleReviewWorkflowConfig)
+	s.mux.HandleFunc(s.routePath("/api/review-workflow/run"), s.handleReviewWorkflowRun)
+	s.mux.HandleFunc(s.routePath("/api/review-workflow/stop"), s.handleReviewWorkflowStop)
+	s.mux.HandleFunc(s.routePath("/api/review-workflow/status"), s.handleReviewWorkflowStatus)
+	s.mux.HandleFunc(s.routePath("/api/review-workflow/stream"), s.handleReviewWorkflowStream)
 	s.mux.HandleFunc(s.routePath("/api/settings"), s.handleSettings)
 	s.mux.HandleFunc(s.routePath("/api/pr/meta"), s.handlePRMeta)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments"), s.handlePRComments)
@@ -235,6 +242,7 @@ func NewServer(ix *Index, lsp *lspManager, basePaths ...string) *Server {
 	s.session = newSessionManager(s.basePath, ix.Root())
 	s.gitWatcher = NewGitWatcher(ix)
 	s.gitWatcher.Start(context.Background())
+	s.reviewFlow = newReviewWorkflowManager(s)
 	s.registerRoutes()
 	s.lastReq.Store(time.Now().UnixNano())
 	go s.scavenge()

@@ -32,6 +32,7 @@ import { initPRScope } from './prscope.js';
 import { initEditView } from './editview.js';
 import { initNewItem } from './newitem.js';
 import { initTips, startTipsAsync } from './tips.js';
+import { initReviewFlow } from './reviewflow.js';
 
 // Initialize all subsystems
 initRenderer();
@@ -39,6 +40,7 @@ initTabs();
 initEditView();
 initNewItem();
 initTips();
+initReviewFlow();
 initCursor();
 initHover();
 initSelectionBar();

@@ -69,7 +69,13 @@ function thrInline(src) {
   const codes = [];
   // 1. Extract inline code spans first so nothing inside is formatted
   let s = src.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, q, code) => {
-    codes.push('<code>' + esc(code.trim()) + '</code>');
+    const trimmed = code.trim();
+    const m = /^([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-(\d+))?)?$/.exec(trimmed);
+    if (m) {
+      codes.push(`<code class="thr-code-ref"><a href="#" class="thr-link" data-path="${esc(m[1])}"` + (m[2] ? ` data-line="${m[2]}"` : '') + `>${esc(trimmed)}</a></code>`);
+    } else {
+      codes.push('<code>' + esc(trimmed) + '</code>');
+    }
     return '%%PXCODE' + (codes.length - 1) + '%%';
   });
 
@@ -101,11 +107,16 @@ function thrInline(src) {
   s = s.replace(/\[([^\]]+)\]\(((?:[^()]|\([^()]*\))*)\)/g, (_, text, url) => {
     const u = thrSafeUrl(url);
     if (!u) return text;
-    const m = /^([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+)(?::(\d+))?$/.exec(url.trim());
+    const m = /^([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-\d+)?)?$/.exec(url.trim());
     if (m && !url.includes('://')) {
       return pushLink(`<a href="#" class="thr-link" data-path="${esc(m[1])}"` + (m[2] ? ` data-line="${m[2]}"` : '') + `>${text}</a>`);
     }
     return pushLink(`<a href="${u}" target="_blank" rel="noopener noreferrer">${text}</a>`);
+  });
+
+  // Bare file:line in prose: e.g. "at agent.go:120"
+  s = s.replace(/(^|[\s(])([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+):(\d+)(?:-(\d+))?(?=[\s),.;:!?]|$)/g, (_, prefix, path, line) => {
+    return prefix + pushLink(`<a href="#" class="thr-link" data-path="${esc(path)}" data-line="${line}">${esc(path)}:${line}</a>`);
   });
 
   // 4. Bracketed autolinks: <https://...>
@@ -133,7 +144,7 @@ function thrInline(src) {
   return s;
 }
 
-function thrMd(src) {
+export function thrMd(src) {
   if (!src) return '';
   const lines = src.replace(/\r\n?/g, '\n').split('\n');
   let html = '';

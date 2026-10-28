@@ -133,61 +133,80 @@
 
   <!-- SECTION: Main Editor Area -->
   <main id="main">
-    <!-- File Tabs -->
+    <!-- Top Control Bar (Level 1 Menu): Mode toggle + View actions -->
+    <header id="main-top-bar" class="main-top-bar">
+      <!-- Workplace mode switch: Code Mode vs Review Mode -->
+      <div id="mode-switch" class="view-switch mode-switch" role="group" aria-label="Workplace Mode">
+        <button id="btn-mode-code" class="active" title="Code Mode ({Mod+Shift+C})">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          <span>Code</span>
+        </button>
+        <button id="btn-mode-review" title="Review Workflow ({Mod+Shift+V})">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          <span>Review</span>
+          <span id="review-badge-status" class="review-status-dot" hidden></span>
+        </button>
+      </div>
+
+      <div class="main-top-bar-spacer"></div>
+
+      <!-- View-mode switches: Diff, Markdown preview, Edit controls, Sidebar toggle -->
+      <div id="view-switches">
+        <!-- Markdown tabs only: switch between the rendered file and its source -->
+        <div id="md-switch" class="view-switch" role="group" aria-label="Preview or source" hidden>
+          <button data-md="preview" title="Rendered view ({Alt+M})">Preview</button>
+          <button data-md="source" title="File source ({Alt+M})">Source</button>
+        </div>
+        <!-- Modified files in a git repo only: view the file's diff against HEAD -->
+        <div id="diff-switch" class="view-switch diff-dropdown" role="group" aria-label="Diff view" hidden>
+          <button id="diff-source" data-diff-opt="source" title="Show the file ({Mod+D})">Source</button>
+          <div class="diff-seg">
+          <button id="diff-btn" title="Show changes against HEAD ({Mod+D})">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="diff-btn-icon"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M18 11.5c0 3-3 3.5-6 3.5"/></svg>
+            <span class="diff-btn-label">Diff</span>
+            <svg viewBox="0 0 10 10" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="diff-caret"><path d="M2 3.5L5 6.5L8 3.5"/></svg>
+          </button>
+          <div id="diff-menu" class="diff-menu" role="menu">
+            <div class="diff-menu-header">Diff View Mode</div>
+            <button type="button" class="diff-menu-item" data-diff-opt="split" role="menuitem" title="Side-by-side split diff view">
+              <span class="diff-item-check" aria-hidden="true">✓</span>
+              <div class="diff-item-content">
+                <span class="diff-item-title">Split</span>
+                <span class="diff-item-desc">Side-by-side</span>
+              </div>
+              <span class="diff-item-badge">Default</span>
+            </button>
+            <button type="button" class="diff-menu-item" data-diff-opt="unified" role="menuitem" title="Inline unified diff view">
+              <span class="diff-item-check" aria-hidden="true">✓</span>
+              <div class="diff-item-content">
+                <span class="diff-item-title">Unified</span>
+                <span class="diff-item-desc">Inline unified</span>
+              </div>
+            </button>
+          </div>
+          </div>
+        </div>
+        <!-- Direct file edit controls -->
+        <div id="edit-switch" class="view-switch" role="group" aria-label="Edit controls" hidden>
+          <button id="btn-edit-mode" title="Edit this file ({Mod+E})">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;vertical-align:-1px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            <span>Edit</span>
+          </button>
+          <button id="btn-save-file" class="edit-btn-save" title="Save changes ({Mod+S})" hidden>
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;vertical-align:-1px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            <span>Save</span>
+          </button>
+          <button id="btn-cancel-edit" class="edit-btn-done" title="Exit edit mode" hidden>
+            <span>Done</span>
+          </button>
+        </div>
+        <!-- Opens the right sidebar; shown only while it is closed -->
+        <button id="btn-open-right" class="open-right" title="Open sidebar ({Mod+J})" aria-label="Open right sidebar"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
+      </div>
+    </header>
+
+    <!-- File Tabs (Level 2: directly below top menu bar) -->
     <div id="tabs"></div>
-    <!-- View-mode switches, pinned to the right of the tab bar -->
-    <div id="view-switches">
-      <!-- Markdown tabs only: switch between the rendered file and its source -->
-      <div id="md-switch" class="view-switch" role="group" aria-label="Preview or source" hidden>
-        <button data-md="preview" title="Rendered view ({Alt+M})">Preview</button>
-        <button data-md="source" title="File source ({Alt+M})">Source</button>
-      </div>
-      <!-- Modified files in a git repo only: view the file's diff against HEAD -->
-      <div id="diff-switch" class="view-switch diff-dropdown" role="group" aria-label="Diff view" hidden>
-        <button id="diff-source" data-diff-opt="source" title="Show the file ({Mod+D})">Source</button>
-        <div class="diff-seg">
-        <button id="diff-btn" title="Show changes against HEAD ({Mod+D})">
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="diff-btn-icon"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M18 11.5c0 3-3 3.5-6 3.5"/></svg>
-          <span class="diff-btn-label">Diff</span>
-          <svg viewBox="0 0 10 10" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="diff-caret"><path d="M2 3.5L5 6.5L8 3.5"/></svg>
-        </button>
-        <div id="diff-menu" class="diff-menu" role="menu">
-          <div class="diff-menu-header">Diff View Mode</div>
-          <button type="button" class="diff-menu-item" data-diff-opt="split" role="menuitem" title="Side-by-side split diff view">
-            <span class="diff-item-check" aria-hidden="true">✓</span>
-            <div class="diff-item-content">
-              <span class="diff-item-title">Split</span>
-              <span class="diff-item-desc">Side-by-side</span>
-            </div>
-            <span class="diff-item-badge">Default</span>
-          </button>
-          <button type="button" class="diff-menu-item" data-diff-opt="unified" role="menuitem" title="Inline unified diff view">
-            <span class="diff-item-check" aria-hidden="true">✓</span>
-            <div class="diff-item-content">
-              <span class="diff-item-title">Unified</span>
-              <span class="diff-item-desc">Inline unified</span>
-            </div>
-          </button>
-        </div>
-        </div>
-      </div>
-      <!-- Direct file edit controls -->
-      <div id="edit-switch" class="view-switch" role="group" aria-label="Edit controls" hidden>
-        <button id="btn-edit-mode" title="Edit this file ({Mod+E})">
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;vertical-align:-1px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          <span>Edit</span>
-        </button>
-        <button id="btn-save-file" class="edit-btn-save" title="Save changes ({Mod+S})" hidden>
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;vertical-align:-1px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-          <span>Save</span>
-        </button>
-        <button id="btn-cancel-edit" class="edit-btn-done" title="Exit edit mode" hidden>
-          <span>Done</span>
-        </button>
-      </div>
-      <!-- Opens the right sidebar; shown only while it is closed -->
-      <button id="btn-open-right" class="open-right" title="Open sidebar ({Mod+J})" aria-label="Open right sidebar"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
-    </div>
 
     <!-- Virtualized Code Editor Viewport -->
     <div id="editor">
@@ -307,6 +326,114 @@
            each pinned beside the diff line it's on (or docked bottom-right
            when that file isn't the one on screen). web/src/pr.js owns it. -->
       <div id="pr-comment-list" class="pr-comment-list" hidden></div>
+    </div>
+
+    <!-- Review Mode Workflow View -->
+    <div id="review-view" class="review-view layout-vertical" hidden>
+      <!-- Left sidebar / Top bar: Sequential Stages Pipeline -->
+      <aside id="review-pipeline" class="review-pipeline">
+        <div class="review-pipeline-head">
+          <div class="review-workflow-info">
+            <span class="review-section-title">Workflow</span>
+            <span id="review-workflow-name" class="review-workflow-name">PR Review Workflow</span>
+          </div>
+          <div class="review-pipeline-head-actions">
+            <button id="btn-toggle-review-layout" class="mini" title="Toggle Layout: Vertical / Horizontal" aria-label="Toggle Layout">
+              <svg id="icon-layout-vert" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
+              <svg id="icon-layout-horiz" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" hidden><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/></svg>
+            </button>
+            <button id="btn-add-review-stage" class="mini review-btn-add" title="Add a new stage to this workflow">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+            <button id="btn-review-settings" class="mini" title="Configure workflow stages" aria-label="Configure workflow">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="review-stages-container" class="review-stages-container"></div>
+        <div class="review-pipeline-actions">
+          <button id="btn-run-review-flow" class="review-run-btn" title="Run workflow stages sequentially">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <span id="btn-run-review-label">Run Workflow</span>
+          </button>
+          <button id="btn-stop-review-flow" class="review-stop-btn" title="Stop running workflow" hidden>
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            <span>Stop</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Center/Right: Active Stage Question & Conversation Thread -->
+      <section id="review-stage-main" class="review-stage-main">
+        <header class="review-stage-header">
+          <div class="review-stage-header-info">
+            <span id="review-stage-badge" class="review-stage-badge">Stage 1</span>
+            <h2 id="review-stage-title" class="review-stage-title">PR Intent & Overview</h2>
+          </div>
+          <div class="review-stage-header-actions">
+            <span id="review-stage-status-tag" class="review-status-tag">Pending</span>
+            <button id="btn-edit-stage-inline" class="mini review-btn-edit-stage" title="Edit this stage title, question and prompt">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              <span>Edit Stage</span>
+            </button>
+            <button id="btn-rerun-stage" class="mini" title="Re-run just this stage">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <div id="review-question-banner" class="review-question-banner">
+          <span class="review-q-label">Question:</span>
+          <span id="review-question-text" class="review-question-text"></span>
+          <button id="btn-quick-edit-q" class="mini review-btn-quick-edit" title="Edit Question">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+        </div>
+
+        <!-- Inline Stage Editor (Right inside the Review View) -->
+        <div id="review-stage-inline-editor" class="review-stage-inline-editor" hidden>
+          <div class="review-inline-edit-row">
+            <label>Stage Title</label>
+            <input type="text" id="inline-edit-stage-title" class="review-inline-input" placeholder="e.g. Performance Impact">
+          </div>
+          <div class="review-inline-edit-row">
+            <label>Review Question</label>
+            <textarea id="inline-edit-stage-q" class="review-inline-textarea" rows="2" placeholder="e.g. Are there any performance bottlenecks or lock contentions?"></textarea>
+          </div>
+          <div class="review-inline-edit-row">
+            <label>Detailed AI Prompt Instructions</label>
+            <textarea id="inline-edit-stage-prompt" class="review-inline-textarea" rows="3" placeholder="Detailed instructions for the AI reviewer..."></textarea>
+          </div>
+          <div class="review-inline-edit-actions">
+            <button id="btn-save-stage-inline" class="footer-btn primary">Save Changes</button>
+            <button id="btn-cancel-stage-inline" class="footer-btn">Cancel</button>
+          </div>
+        </div>
+
+        <!-- Transcript of this stage's thread -->
+        <div id="review-thread-msgs" class="review-thread-msgs thr-msgs"></div>
+
+        <!-- Composer to ask follow-up questions on this stage -->
+        <div class="review-compose-wrap">
+          <div class="review-compose-inner">
+            <textarea id="review-compose-input" class="agent-input review-input" rows="2" spellcheck="false" autocomplete="off" placeholder="Ask follow-up question about this stage..."></textarea>
+            <div class="review-compose-foot">
+              <span class="agent-hint">Enter to send, Shift+Enter for new line</span>
+              <button id="review-compose-send" class="agent-send review-send-btn">Send</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Floating Jump Return Pill (shown in Code Mode when jumped from a review link) -->
+    <div id="review-return-pill" class="review-return-pill" hidden>
+      <span class="review-return-icon">&#8617;</span>
+      <span id="review-return-label">Viewing from Review</span>
+      <button id="btn-return-to-review" class="review-return-btn" title="Return to Review Mode ({Mod+Shift+V})">
+        Back to Review <kbd>Mod+Shift+V</kbd>
+      </button>
+      <button id="btn-dismiss-review-return" class="review-return-close" title="Dismiss">&times;</button>
     </div>
 
     <!-- PR review bar: shown only when this session is `px0 pr ...` (web/src/pr.js) -->
@@ -780,6 +907,64 @@
         <img id="lb-img" src="" alt="">
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Modal Dialog for Configuring Review Workflow -->
+<div id="review-config-dialog" class="modal-overlay" hidden>
+  <div class="settings-dialog review-config-dialog-box" role="dialog" aria-modal="true" aria-labelledby="review-config-title">
+    <header class="settings-header">
+      <div class="settings-title-group">
+        <h2 id="review-config-title">Configure Review Workflow</h2>
+        <span class="settings-path-badge">.px0/workflows.json</span>
+      </div>
+      <div class="settings-header-actions">
+        <button id="review-config-close" class="mini settings-close-btn" title="Close (Esc)">&#10005;</button>
+      </div>
+    </header>
+    <div class="review-config-body">
+      <div class="review-config-field">
+        <label>Workflow Name</label>
+        <input type="text" id="review-config-wf-name" placeholder="e.g. Standard PR Review">
+      </div>
+      <div class="review-config-stages-head">Stages Pipeline</div>
+      <div id="review-config-stages" class="review-config-stages"></div>
+    </div>
+    <footer class="settings-foot">
+      <button id="review-config-save" class="footer-btn pr-btn-merge">Save Workflow</button>
+    </footer>
+  </div>
+</div>
+
+<!-- Modal Dialog for Adding a New Review Stage -->
+<div id="review-add-stage-modal" class="modal-overlay" hidden>
+  <div class="settings-dialog review-add-stage-dialog-box" role="dialog" aria-modal="true" aria-labelledby="add-stage-title">
+    <header class="settings-header">
+      <div class="settings-title-group">
+        <h2 id="add-stage-title">Add Review Stage</h2>
+      </div>
+      <div class="settings-header-actions">
+        <button id="add-stage-close" class="mini settings-close-btn" title="Close (Esc)">&#10005;</button>
+      </div>
+    </header>
+    <div class="review-config-body">
+      <div class="review-config-field">
+        <label>Stage Title</label>
+        <input type="text" id="add-stage-title-input" placeholder="e.g. Security & Permissions">
+      </div>
+      <div class="review-config-field">
+        <label>Review Question</label>
+        <input type="text" id="add-stage-q-input" placeholder="e.g. Does this PR introduce any auth or injection risks?">
+      </div>
+      <div class="review-config-field">
+        <label>Detailed AI Prompt</label>
+        <textarea rows="3" id="add-stage-prompt-input" placeholder="Detailed instructions for the AI reviewer..."></textarea>
+      </div>
+    </div>
+    <footer class="settings-foot">
+      <button id="add-stage-cancel" class="footer-btn">Cancel</button>
+      <button id="add-stage-submit" class="footer-btn pr-btn-merge">Add Stage</button>
+    </footer>
   </div>
 </div>
 
