@@ -4,6 +4,7 @@ import { openFile } from './tabs.js';
 import { showToast } from './ui.js';
 import { layout } from './renderer.js';
 import { thrMd } from './thread.js';
+import { onStream, setStreamTopic, watchThread } from './stream.js';
 
 let currentMode = 'code'; // 'code' | 'review'
 let currentLayout = (typeof localStorage !== 'undefined' && localStorage.getItem('px0-review-layout')) || 'vertical';
@@ -42,8 +43,7 @@ let reviewConfig = {
 };
 let currentRun = null;
 let activeStageIdx = 0;
-let workflowEs = null;
-let stageThreadEs = null;
+let stageThread = null; // { id, t, release }: the stage thread shown, and its live feed
 let lastJumpContext = null; // { path, line, stageTitle }
 
 const statusIcons = {
@@ -159,14 +159,18 @@ export function setMode(mode) {
 }
 
 export function disconnectWorkflowStream() {
-  if (workflowEs) {
-    try { workflowEs.close(); } catch (_) {}
-    workflowEs = null;
-  }
-  if (stageThreadEs) {
-    try { stageThreadEs.close(); } catch (_) {}
-    stageThreadEs = null;
-  }
+  setStreamTopic('review', false);
+  releaseStageThread();
+}
+
+function followStageThread(st) {
+  st.release = watchThread(st.id);
+  st.live = true;
+}
+
+function releaseStageThread() {
+  stageThread?.release();
+  stageThread = null;
 }
 
 export function initReviewFlow() {
@@ -178,11 +182,7 @@ export function initReviewFlow() {
   wireInlineStageEditor();
   wireAddStageModal();
   wireWorkflowNameEditor();
-  if (typeof window !== 'undefined') {
-    window.addEventListener('beforeunload', () => {
-      disconnectWorkflowStream();
-    });
-  }
+  wireStreams();
 }
 
 function wireModeControls() {
@@ -272,55 +272,72 @@ async function loadWorkflowStatus() {
 
 function connectWorkflowStream() {
   if (currentMode !== 'review') return;
-  if (typeof EventSource === 'undefined') return;
-  if (workflowEs) {
-    try { workflowEs.close(); } catch (_) {}
-    workflowEs = null;
-  }
-  const streamUrl = new URL('/api/review-workflow/stream', document.baseURI || location.href).href;
-  try {
-    workflowEs = new EventSource(streamUrl);
-  } catch (_) {
-    return;
-  }
+  setStreamTopic('review', true);
+}
 
-  workflowEs.addEventListener('snapshot', (e) => {
-    try {
-      const run = JSON.parse(e.data);
-      if (run) {
-        currentRun = run;
-        renderPipeline();
-        renderActiveStage();
-        updateBackgroundStatusDot();
-      }
-    } catch (_) {}
+// Workflow and stage-thread events arrive on the tab's shared event stream
+// (stream.js); these handlers stay registered and the topics turn them on.
+function wireStreams() {
+  onStream('review:snapshot', (run) => {
+    if (!run) return;
+    currentRun = run;
+    renderPipeline();
+    renderActiveStage();
+    updateBackgroundStatusDot();
   });
 
-  const handleUpdate = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      if (data.stages || data.Stages) {
-        currentRun = data;
-      } else if (data.stage && currentRun) {
-        const runStages = currentRun.stages || currentRun.Stages;
-        if (runStages && runStages[data.stageIndex]) {
-          runStages[data.stageIndex] = data.stage;
-        }
-        currentRun.activeStage = data.stageIndex;
+  const handleUpdate = (data) => {
+    if (!data) return;
+    if (data.stages || data.Stages) {
+      currentRun = data;
+    } else if (data.stage && currentRun) {
+      const runStages = currentRun.stages || currentRun.Stages;
+      if (runStages && runStages[data.stageIndex]) {
+        runStages[data.stageIndex] = data.stage;
       }
-      renderPipeline();
-      renderActiveStage();
-      updateBackgroundStatusDot();
-    } catch (_) {}
+      currentRun.activeStage = data.stageIndex;
+    }
+    renderPipeline();
+    renderActiveStage();
+    updateBackgroundStatusDot();
   };
+  for (const name of ['run_started', 'stage_started', 'stage_updated', 'stage_completed', 'stage_failed', 'run_completed', 'run_stopped']) {
+    onStream('review:' + name, handleUpdate);
+  }
 
-  workflowEs.addEventListener('run_started', handleUpdate);
-  workflowEs.addEventListener('stage_started', handleUpdate);
-  workflowEs.addEventListener('stage_updated', handleUpdate);
-  workflowEs.addEventListener('stage_completed', handleUpdate);
-  workflowEs.addEventListener('stage_failed', handleUpdate);
-  workflowEs.addEventListener('run_completed', handleUpdate);
-  workflowEs.addEventListener('run_stopped', handleUpdate);
+  // The stage transcript is patched from the events themselves: refetching
+  // the whole thread per delta sent a request per streamed token.
+  let paintRAF = 0;
+  const paint = () => {
+    if (paintRAF) return;
+    paintRAF = requestAnimationFrame(() => {
+      paintRAF = 0;
+      if (stageThread?.t) renderThreadTranscript(stageThread.t);
+    });
+  };
+  const turnOf = (d) => {
+    const turns = stageThread?.t?.turns || stageThread?.t?.Turns || [];
+    return turns.find(x => (x.id || x.ID) === d.turn);
+  };
+  onStream('thread:thread', ({ id, data }) => {
+    if (stageThread?.id !== id) return;
+    stageThread.t = data;
+    paint();
+  });
+  onStream('thread:delta', ({ id, data: d }) => {
+    if (stageThread?.id !== id) return;
+    const turn = turnOf(d);
+    if (!turn) return;
+    turn.reply = (turn.reply || '') + d.text;
+    paint();
+  });
+  onStream('thread:tool', ({ id, data: d }) => {
+    if (stageThread?.id !== id) return;
+    const turn = turnOf(d);
+    if (!turn) return;
+    (turn.tools = turn.tools || []).push(d.text);
+    paint();
+  });
 }
 
 function updateBackgroundStatusDot() {
@@ -600,38 +617,28 @@ async function loadAndStreamStageThread(threadId) {
   const msgsEl = $('#review-thread-msgs');
   if (!msgsEl) return;
 
-  try {
-    const t = await api(`/api/threads/get?id=${encodeURIComponent(threadId)}`);
-    renderThreadTranscript(t);
-  } catch (err) {
-    msgsEl.innerHTML = `<div class="review-err">Failed to load stage thread: ${esc(err.message)}</div>`;
-  }
-
-  // Hook SSE stream for this thread only if actively viewing in review mode
-  if (currentMode !== 'review' || typeof EventSource === 'undefined') return;
-  if (stageThreadEs) {
-    try { stageThreadEs.close(); } catch (_) {}
-    stageThreadEs = null;
-  }
-  const streamUrl = new URL(`/api/threads/stream?id=${encodeURIComponent(threadId)}`, document.baseURI || location.href).href;
-  try {
-    stageThreadEs = new EventSource(streamUrl);
-  } catch (_) {
+  // Workflow updates re-render the active stage often; the same thread is
+  // already followed, so just repaint what we have.
+  if (stageThread?.id === threadId && stageThread.t) {
+    if (currentMode === 'review' && !stageThread.live) followStageThread(stageThread);
+    renderThreadTranscript(stageThread.t);
     return;
   }
 
-  stageThreadEs.addEventListener('thread', (e) => {
-    try {
-      const t = JSON.parse(e.data);
-      renderThreadTranscript(t);
-    } catch (_) {}
-  });
+  releaseStageThread();
+  const cur = stageThread = { id: threadId, t: null, live: false, release: () => {} };
+  // Follow the thread only while actively viewing it in review mode.
+  if (currentMode === 'review') followStageThread(cur);
 
-  stageThreadEs.addEventListener('delta', () => {
-    api(`/api/threads/get?id=${encodeURIComponent(threadId)}`).then(t => {
-      renderThreadTranscript(t);
-    });
-  });
+  try {
+    const t = await api(`/api/threads/get?id=${encodeURIComponent(threadId)}`);
+    if (stageThread !== cur) return;
+    if (!cur.t) cur.t = t; // a stream snapshot may already have landed
+    renderThreadTranscript(cur.t);
+  } catch (err) {
+    if (stageThread !== cur) return;
+    msgsEl.innerHTML = `<div class="review-err">Failed to load stage thread: ${esc(err.message)}</div>`;
+  }
 }
 
 function renderThreadTranscript(t) {

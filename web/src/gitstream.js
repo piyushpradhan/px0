@@ -7,17 +7,12 @@ import { updateStatus, updateMetricsDisplay } from './status.js';
 import { updateGitPanel } from './gitpanel.js';
 import { refreshUnpushed } from './unpushed.js';
 import { updateScopeCounts } from './prscope.js';
+import { onStream, openStream, closeStream, streamOpen, streamTrafficAt } from './stream.js';
 
-let eventSource = null;
 let reconnectTimer = null;
 let lastSig = '';
 let refreshing = null;
 let lastRefreshAt = 0;
-let lastTrafficAt = Date.now();
-
-function markTraffic() {
-  lastTrafficAt = Date.now();
-}
 
 function reconnect() {
   disconnect();
@@ -31,6 +26,8 @@ async function handleWake() {
 }
 
 export function initGitStream() {
+  onStream('git-status', handleGitStatus);
+  onStream('metrics', updateMetricsDisplay);
   connect();
 
   // Instant refresh when user focuses the browser window
@@ -38,7 +35,7 @@ export function initGitStream() {
     if (document.visibilityState === 'visible') {
       const now = Date.now();
       // If the connection is closed, or if no SSE traffic has arrived for >5s, reconnect
-      if (!eventSource || eventSource.readyState !== EventSource.OPEN || (now - lastTrafficAt > 5000)) {
+      if (!streamOpen() || (now - streamTrafficAt() > 5000)) {
         handleWake();
       } else {
         triggerRefresh();
@@ -70,7 +67,7 @@ export function initGitStream() {
     }
 
     // 2. Stream watchdog: if tab is visible and no SSE events arrived for >12s, reconnect
-    if (document.visibilityState === 'visible' && (now - lastTrafficAt > 12000)) {
+    if (document.visibilityState === 'visible' && (now - streamTrafficAt() > 12000)) {
       handleWake();
     }
   }, 1000);
@@ -96,51 +93,16 @@ export function triggerRefresh() {
 }
 
 function connect() {
-  if (eventSource && eventSource.readyState !== EventSource.CLOSED) return;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-
   try {
-    const streamUrl = new URL('api/stream', document.baseURI || location.href).href;
-    eventSource = new EventSource(streamUrl);
-    markTraffic();
-
-    eventSource.onopen = () => {
-      markTraffic();
-    };
-
-    eventSource.addEventListener('git-status', async e => {
-      markTraffic();
-      try {
-        const data = JSON.parse(e.data);
-        await handleGitStatus(data);
-      } catch (err) {
-        // Drop malformed frame
-      }
-    });
-
-    eventSource.addEventListener('metrics', e => {
-      markTraffic();
-      try {
-        const data = JSON.parse(e.data);
-        updateMetricsDisplay(data);
-      } catch (err) {
-        // Drop malformed frame
-      }
-    });
-
-    eventSource.addEventListener('ping', () => {
-      markTraffic();
-    });
-
-    eventSource.onerror = () => {
-      disconnect();
+    openStream(() => {
       if (document.visibilityState === 'visible') {
         reconnectTimer = setTimeout(connect, 1500);
       }
-    };
+    });
   } catch (err) {
     // Fallback if EventSource fails to construct
   }
@@ -151,10 +113,7 @@ function disconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
-  }
+  closeStream();
 }
 
 export async function handleGitStatus(data) {

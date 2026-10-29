@@ -6,6 +6,7 @@ import { openFile } from './tabs.js';
 import { setThreadHandler, hideSelectionBar } from './selbar.js';
 import { showRightInspector } from './inspector.js';
 import { registerAgentPicker, reloadWorkspace } from './agent.js';
+import { onStream, setStreamTopic, watchThread } from './stream.js';
 
 const COPY_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg>';
 const COPIED_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5 8.5 6.5 11.5 12.5 5.5"/></svg>';
@@ -18,11 +19,11 @@ const COPIED_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none"
    than one-shot inline edits.
 
    The right sidebar has two views: the list of threads, and one open thread
-   (or a new draft) with its transcript and composer. Two event streams feed it:
-   one for the list, which also tells the editor when a finished turn changed
-   files so open tabs reload, and one per open thread, carrying the reply as it
-   is written. Both are server-sent events, so a dropped connection simply
-   reconnects to a fresh snapshot. */
+   (or a new draft) with its transcript and composer. Two feeds on the tab's
+   shared event stream (stream.js) drive it: the list, which also tells the
+   editor when a finished turn changed files so open tabs reload, and the open
+   thread, carrying the reply as it is written. A dropped connection simply
+   reconnects to a fresh snapshot of both. */
 
 const thr = {
   avail: false,
@@ -30,13 +31,12 @@ const thr = {
   filter: 'all',      // all | file
   cur: null,          // the open thread, as last received
   draft: null,        // {path, l1, l2} for a thread not yet created, or {} for a workspace-level one
-  listEs: null,
   opening: null,      // id of the thread being fetched, so a late reply for another one is dropped
-  threadEs: null,
+  threadId: null,     // id of the thread whose live events we follow
+  releaseThread: null,
   sending: false,
 };
 
-const thrUrl = p => new URL(p, document.baseURI || location.href).href;
 const thrRefText = t => t.path ? t.path + ':' + (t.l1 === t.l2 ? t.l1 : t.l1 + '-' + t.l2) : 'Workspace';
 
 function thrAgo(ms) {
@@ -409,26 +409,25 @@ function thrApplyList(next) {
 }
 
 function thrConnectList() {
-  if (thr.listEs) return;
-  const es = thr.listEs = new EventSource(thrUrl('api/threads/stream'));
-  es.addEventListener('list', e => thrApplyList(JSON.parse(e.data)));
-  es.addEventListener('summary', e => {
-    const s = JSON.parse(e.data);
-    const next = thr.list.filter(t => t.id !== s.id);
-    next.push(s);
+  onStream('threads:list', thrApplyList);
+  onStream('threads:summary', sm => {
+    const next = thr.list.filter(t => t.id !== sm.id);
+    next.push(sm);
     next.sort((a, b) => b.updated - a.updated);
     thrApplyList(next);
   });
-  es.addEventListener('deleted', e => {
-    const { id } = JSON.parse(e.data);
+  onStream('threads:deleted', ({ id }) => {
     thrApplyList(thr.list.filter(t => t.id !== id));
   });
+  setStreamTopic('threads', true);
 }
 
 /* ---------- thread view ---------- */
 
 function thrCloseStream() {
-  if (thr.threadEs) { thr.threadEs.close(); thr.threadEs = null; }
+  thr.releaseThread?.();
+  thr.releaseThread = null;
+  thr.threadId = null;
 }
 
 const thrRunning = () => !!(thr.cur && thr.cur.turns.length && thr.cur.turns[thr.cur.turns.length - 1].running);
@@ -541,17 +540,23 @@ function thrRenderState() {
 
 function thrOpenStream(id) {
   thrCloseStream();
-  const es = thr.threadEs = new EventSource(thrUrl('api/threads/stream?id=' + encodeURIComponent(id)));
-  es.addEventListener('thread', e => {
-    if (thr.threadEs !== es) return;
-    thr.cur = JSON.parse(e.data);
+  thr.threadId = id;
+  thr.releaseThread = watchThread(id);
+}
+
+// Live events for the open thread arrive as {id, data}; anything for a thread
+// we have since left is dropped.
+function thrWireStream() {
+  const mine = d => thr.threadId === d.id;
+  onStream('thread:thread', d => {
+    if (!mine(d)) return;
+    thr.cur = d.data;
     thrRenderState();
   });
   let deltaRAF = 0;
   const dirtyTurns = new Set();
-  es.addEventListener('delta', e => {
-    if (thr.threadEs !== es || !thr.cur) return;
-    const d = JSON.parse(e.data);
+  onStream('thread:delta', ({ id, data: d }) => {
+    if (thr.threadId !== id || !thr.cur) return;
     const turn = thr.cur.turns.find(x => x.id === d.turn);
     if (!turn) return;
     turn.reply = (turn.reply || '') + d.text;
@@ -559,7 +564,7 @@ function thrOpenStream(id) {
     if (deltaRAF) return;
     deltaRAF = requestAnimationFrame(() => {
       deltaRAF = 0;
-      if (thr.threadEs !== es || !thr.cur) return;
+      if (!thr.threadId || !thr.cur) { dirtyTurns.clear(); return; }
       const box = thrEl.msgs;
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
       for (const turnId of dirtyTurns) {
@@ -572,9 +577,8 @@ function thrOpenStream(id) {
       if (stick) box.scrollTop = box.scrollHeight;
     });
   });
-  es.addEventListener('tool', e => {
-    if (thr.threadEs !== es || !thr.cur) return;
-    const d = JSON.parse(e.data);
+  onStream('thread:tool', ({ id, data: d }) => {
+    if (thr.threadId !== id || !thr.cur) return;
     const turn = thr.cur.turns.find(x => x.id === d.turn);
     if (!turn) return;
     (turn.tools = turn.tools || []).push(d.text);
@@ -589,8 +593,7 @@ function thrOpenStream(id) {
     }
     if (stick) box.scrollTop = box.scrollHeight;
   });
-  es.addEventListener('deleted', () => { if (thr.threadEs === es) thrBack(); });
-  es.onerror = () => { /* EventSource reconnects on its own and resends a snapshot */ };
+  onStream('thread:deleted', d => { if (mine(d)) thrBack(); });
 }
 
 export async function openThread(id) {
@@ -655,7 +658,7 @@ async function thrSend() {
       thrOpenStream(t.id);
     } else if (thr.cur) {
       await apiPostJson('/api/threads/send', { id: thr.cur.id, message });
-      if (!thr.threadEs) thrOpenStream(thr.cur.id);
+      if (thr.threadId !== thr.cur.id) thrOpenStream(thr.cur.id);
     } else {
       return;
     }
@@ -830,6 +833,7 @@ export function initThreads() {
     $('#tab-threads').hidden = false;
     thr.list = j.threads || [];
     thrDrawList();
+    thrWireStream();
     thrConnectList();
   }).catch(() => {
     $('[data-sel="thread"]')?.setAttribute('hidden', '');
