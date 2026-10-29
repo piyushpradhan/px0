@@ -117,21 +117,31 @@ func repoRelKey(info gitInfo, root string) func(string) (string, bool) {
 
 // gitStatusAndStagedAgainst runs a single `git status --porcelain=v2 -z -uall`
 // command to extract both working-tree status codes and staged index paths,
+// plus the staged paths modified again in the worktree since (partial),
 // and optionally overlays diffs against base and head (for PR review mode)
 // without spawning duplicate git status processes.
-func gitStatusAndStagedAgainst(root, base, head string) (status map[string]string, staged map[string]bool, yourStatus map[string]string) {
+func gitStatusAndStagedAgainst(root, base, head string) (status map[string]string, staged, partial map[string]bool, yourStatus map[string]string) {
 	info := gitProbe(root)
 	if !info.ok {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	out, err := exec.Command("git", "-C", root, "status", "--porcelain=v2", "-z", "-uall").Output()
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	key := repoRelKey(info, root)
 
 	wtStatus := map[string]string{}
 	staged = map[string]bool{}
+	partial = map[string]bool{}
+	markStaged := func(k, xy string) {
+		if len(xy) == 2 && xy[0] != '.' {
+			staged[k] = true
+			if xy[1] != '.' {
+				partial[k] = true
+			}
+		}
+	}
 	fields := strings.Split(string(out), "\x00")
 	for i := 0; i < len(fields); i++ {
 		f := fields[i]
@@ -148,9 +158,7 @@ func gitStatusAndStagedAgainst(root, base, head string) (status map[string]strin
 			if len(p) == 9 {
 				if k, ok := key(p[8]); ok {
 					wtStatus[k] = mapXY(p[1])
-					if len(p[1]) > 0 && p[1][0] != '.' {
-						staged[k] = true
-					}
+					markStaged(k, p[1])
 				}
 			}
 		case '2': // "2 <XY> ... <Rscore> <path>", then original path in the next field
@@ -158,9 +166,7 @@ func gitStatusAndStagedAgainst(root, base, head string) (status map[string]strin
 			if len(p) == 10 {
 				if k, ok := key(p[9]); ok {
 					wtStatus[k] = mapXY(p[1])
-					if len(p[1]) > 0 && p[1][0] != '.' {
-						staged[k] = true
-					}
+					markStaged(k, p[1])
 				}
 			}
 			i++ // the original path follows as its own NUL-terminated field
@@ -202,7 +208,10 @@ func gitStatusAndStagedAgainst(root, base, head string) (status map[string]strin
 	if len(staged) == 0 {
 		staged = nil
 	}
-	return status, staged, yourStatus
+	if len(partial) == 0 {
+		partial = nil
+	}
+	return status, staged, partial, yourStatus
 }
 
 // gitStatusAgainst maps changed files relative to root against base.
@@ -210,7 +219,7 @@ func gitStatusAndStagedAgainst(root, base, head string) (status map[string]strin
 // When base is an arbitrary commit or ref (such as a PR merge-base),
 // it includes both files changed against base and working-tree changes.
 func gitStatusAgainst(root, base string) map[string]string {
-	st, _, _ := gitStatusAndStagedAgainst(root, base, "")
+	st, _, _, _ := gitStatusAndStagedAgainst(root, base, "")
 	return st
 }
 
@@ -1449,6 +1458,7 @@ type GitStatusPayload struct {
 	Statuses      map[string]string `json:"statuses"`                // Relative path -> status code (e.g. "M", "A", "D", "U")
 	DirtyDirs     map[string]bool   `json:"dirtyDirs,omitempty"`     // Relative directory path -> true if any descendant is modified
 	Staged        map[string]bool   `json:"staged,omitempty"`        // Relative path -> true if file has staged changes
+	Partial       map[string]bool   `json:"partial,omitempty"`       // Relative path -> true if a staged file was modified again after staging
 	YourStatuses  map[string]string `json:"yourStatuses,omitempty"`  // PR mode: relative path -> reviewer modification status
 	YourDirtyDirs map[string]bool   `json:"yourDirtyDirs,omitempty"` // PR mode: directory path -> contains reviewer changes
 	Branch        string            `json:"branch,omitempty"`        // Active branch name
@@ -1692,6 +1702,7 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool
 	ready := gw.ix.Ready()
 	inGit := gitAvailable(gw.root)
 	count, files, changed, statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs := gw.ix.UpdateGitStatus()
+	partial := gw.ix.GitPartial()
 
 	gw.mu.Lock()
 	if ready != gw.lastReady || inGit != gw.lastInGit {
@@ -1759,6 +1770,7 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool
 		Statuses:      statuses,
 		DirtyDirs:     dirtyDirs,
 		Staged:        staged,
+		Partial:       partial,
 		YourStatuses:  yourStatuses,
 		YourDirtyDirs: yourDirtyDirs,
 		Branch:        branch,

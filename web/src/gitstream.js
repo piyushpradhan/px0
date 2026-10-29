@@ -189,12 +189,13 @@ export async function handleGitStatus(data) {
   const statuses = data.statuses || {};
   const dirtyDirs = data.dirtyDirs || {};
   const staged = data.staged || {};
+  const partial = data.partial || {};
   const yourStatuses = data.yourStatuses || {};
   const yourDirtyDirs = data.yourDirtyDirs || {};
 
   // Patch rendered tree items in place without full DOM reload
   try {
-    await patchTreeGitStatus(statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs);
+    await patchTreeGitStatus(statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs, partial);
   } catch (err) {
     console.error('Failed to patch tree git status', err);
   }

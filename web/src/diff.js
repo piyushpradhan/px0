@@ -390,8 +390,8 @@ export function toggleFileViewed(path) {
   if (viewedFiles.has(path)) viewedFiles.delete(path);
   else viewedFiles.add(path);
   const viewed = viewedFiles.has(path);
-  for (const ti of $$('#tree .ti[data-path]')) {
-    if (ti.dataset.path === path) ti.classList.toggle('file-viewed', viewed);
+  for (const row of $$('#tree .tr.file[data-file="' + CSS.escape(path) + '"]')) {
+    row.classList.toggle('file-viewed', viewed);
   }
   return viewed;
 }
@@ -403,13 +403,15 @@ function currentChangedFiles(d = doc_()) {
   if (d?.diffRef) {
     return cachedCommitFiles(d.diffRef) || [];
   }
+  // Worktree changes come from the live git status, not the tree DOM: files
+  // inside collapsed folders are not rendered but still need stepping to.
   const list = [];
   const seen = new Set();
-  for (const el of $$('#tree .ti[data-git]:not([data-dir="1"])')) {
-    const p = el.dataset.path;
+  for (const p of S.meta?.gitFiles || []) {
     if (p && !seen.has(p)) {
       seen.add(p);
-      list.push({ path: p, status: el.dataset.git || 'M' });
+      const row = $('#tree .tr.file[data-file="' + CSS.escape(p) + '"]');
+      list.push({ path: p, status: row?.dataset.st || 'M' });
     }
   }
   if (d?.path && d.diffAvailable && !seen.has(d.path)) {

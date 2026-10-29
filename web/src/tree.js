@@ -1,7 +1,7 @@
 // web/src/tree.js
 import { $, $$, esc, api, apiPost, apiPostJson, S } from './state.js';
 import { openFile } from './tabs.js';
-import { syncDiffView, focusDiffScope } from './diff.js';
+import { syncDiffView, focusDiffScope, isFileViewed } from './diff.js';
 import { showToast, copyToClipboard } from './ui.js';
 import { closeSelMenu } from './selbar.js';
 import { emit, on } from './bus.js';
@@ -62,13 +62,21 @@ export async function drawTree(dir, container, depth, isCurrent) {
     const badge = g ? '<span class="gs' + (isYou ? ' gs-you' : '') + '" title="' + (isYou ? 'Your change (' + c.yourStatus + '), git: ' + g[1] : 'git: ' + g[1]) + '">' + esc(c.status) + '</span>' + youBadge : '';
     const showTick = S.meta?.pr ? isYou : !!g;
     const isStaged = !!(showTick && c.staged);
-    const sc = isStaged ? ' is-staged' : '';
-    const tick = showTick ? '<button type="button" class="stage-tick' + (isStaged ? ' staged' : '') + '" data-stage="' + esc(c.path) + '" aria-pressed="' + (isStaged ? 'true' : 'false') + '" title="' + (isStaged ? 'Staged — click to unstage' : 'Stage file') + '"></button>' : '';
+    const isPartial = isStaged && !!c.partial;
+    const sc = (isStaged ? ' is-staged' : '') + (isFileViewed(c.path) ? ' file-viewed' : '');
+    const tick = showTick ? '<button type="button" class="stage-tick' + (isStaged ? ' staged' : '') + (isPartial ? ' partial' : '') + '" data-stage="' + esc(c.path) + '" aria-pressed="' + (isStaged ? 'true' : 'false') + '" title="' + stageTickTitle(isStaged, isPartial) + '"></button>' : '';
     return '<div class="tr file' + ig + gc + yc + sc + '" data-file="' + esc(c.path) + '"' + (c.status ? ' data-st="' + esc(c.status) + '"' : '') + (c.yourStatus ? ' data-yst="' + esc(c.yourStatus) + '"' : '') + ' style="padding-left:' + (pad + 12) + 'px" title="Open ' + esc(c.path) + note + '">' +
       '<span class="ic" data-t="' + fileKind(c.name) + '"></span><span class="nm">' + esc(c.name) + '</span>' + badge + tick + menuBtn + '</div>';
   }).join('');
   relabelTreeBadges();
   return true;
+}
+
+/* A partial tick is staged but changed again since: clicking it stages the new
+   changes rather than unstaging, so the usual one click brings it up to date. */
+function stageTickTitle(staged, partial) {
+  if (partial) return 'Changed after staging: the staged copy is older than the file on disk, so a commit would leave the new edits out. Click to stage them.';
+  return staged ? 'Staged — click to unstage' : 'Stage file';
 }
 
 /* The paths the PR itself changes (server: diffBase..PR head), as a Set. Rows in
@@ -307,7 +315,7 @@ export async function expandDirtyDirs(container = treeEl, version = expansionVer
   }));
 }
 
-export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged = {}, yourStatuses = {}, yourDirtyDirs = {}) {
+export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged = {}, yourStatuses = {}, yourDirtyDirs = {}, partial = {}) {
   // Check if any changed files belong to an open directory (or root) but don't have a DOM element yet,
   // or if any previously deleted files are now clean (so they should disappear from the tree).
   let needRefresh = false;
@@ -401,6 +409,7 @@ export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged =
 
       const showTick = S.meta?.pr ? isYou : true;
       const isStaged = !!(showTick && staged[p]);
+      const isPartial = isStaged && !!partial[p];
       fileRow.classList.toggle('is-staged', isStaged);
       let tick = fileRow.querySelector('.stage-tick');
       if (showTick) {
@@ -412,8 +421,9 @@ export async function patchTreeGitStatus(statuses = {}, dirtyDirs = {}, staged =
           fileRow.appendChild(tick);
         }
         tick.classList.toggle('staged', isStaged);
+        tick.classList.toggle('partial', isPartial);
         tick.setAttribute('aria-pressed', isStaged ? 'true' : 'false');
-        tick.title = isStaged ? 'Staged — click to unstage' : 'Stage file';
+        tick.title = stageTickTitle(isStaged, isPartial);
       } else if (tick) {
         tick.remove();
       }
@@ -641,12 +651,15 @@ export function initTree() {
       e.stopPropagation();
       e.preventDefault();
       const path = tick.dataset.stage;
-      const staged = !tick.classList.contains('staged');
+      const wasPartial = tick.classList.contains('partial');
+      const staged = wasPartial || !tick.classList.contains('staged');
       const applyOptimistic = s => {
         for (const el of $$('.stage-tick[data-stage="' + CSS.escape(path) + '"]')) {
+          const partial = s !== staged && wasPartial; // only a rollback restores it
           el.classList.toggle('staged', s);
+          el.classList.toggle('partial', partial);
           el.setAttribute('aria-pressed', s ? 'true' : 'false');
-          el.title = s ? 'Staged — click to unstage' : 'Stage file';
+          el.title = stageTickTitle(s, partial);
           el.closest('.tr.file')?.classList.toggle('is-staged', s);
         }
       };
