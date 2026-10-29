@@ -273,6 +273,7 @@ export function selectAll() {
   window.getSelection()?.removeAllRanges();
   S.selAll = d;
   allInfo = null;
+  render();
   const rawUrl = new URL('api/raw?path=' + encodeURIComponent(d.path), document.baseURI || location.href).href;
   const text = allText = fetch(rawUrl)
     .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); });

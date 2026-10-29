@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1285,5 +1286,75 @@ func TestThreadDeleteAPI(t *testing.T) {
 	code, _ = agentPost(t, s, "/api/threads/delete")
 	if code != 400 {
 		t.Fatalf("delete without id = %d, want 400", code)
+	}
+}
+
+// A tab follows threads and the review workflow over its one /api/stream
+// connection: browsers cap connections per host, and a stream per feature
+// used to exhaust them.
+func TestEventStreamMultiplexesFeeds(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644)
+	s := agentServer(t, root, writeHarness(t, `printf 'ok\n'`))
+
+	code, m := agentPostJSON(t, s, "/api/threads/create", map[string]any{"message": "hi"})
+	if code != 200 {
+		t.Fatalf("create = %d %v", code, m)
+	}
+	id := m["id"].(string)
+	waitThreadIdle(t, s, id)
+
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/stream?threads=1&review=1&thread="+id+"&thread=gone", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	want := map[string]bool{"metrics": false, "threads:list": false, "thread:thread": false, "thread:deleted": false, "review:snapshot": false}
+	data := map[string]string{}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	var ev string
+	for sc.Scan() {
+		line := sc.Text()
+		if name, ok := strings.CutPrefix(line, "event: "); ok {
+			ev = name
+		} else if d, ok := strings.CutPrefix(line, "data: "); ok {
+			if _, tracked := want[ev]; tracked && !want[ev] {
+				want[ev] = true
+				data[ev] = d
+			}
+		}
+		done := true
+		for _, seen := range want {
+			done = done && seen
+		}
+		if done {
+			break
+		}
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Fatalf("no %s event on the multiplexed stream; got %v", name, data)
+		}
+	}
+
+	var env struct {
+		ID   string  `json:"id"`
+		Data *thread `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(data["thread:thread"]), &env); err != nil || env.ID != id || env.Data == nil || env.Data.ID != id {
+		t.Fatalf("thread:thread envelope = %s (%v)", data["thread:thread"], err)
+	}
+	if !strings.Contains(data["thread:deleted"], `"id":"gone"`) {
+		t.Fatalf("missing thread should be reported deleted, got %s", data["thread:deleted"])
+	}
+	if !strings.Contains(data["threads:list"], id) {
+		t.Fatalf("thread list should carry %s, got %s", id, data["threads:list"])
 	}
 }

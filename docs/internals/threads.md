@@ -19,8 +19,8 @@ sequenceDiagram
     participant H as Harness
     participant G as git
 
-    UI->>S: GET /api/threads/stream?id (SSE)
-    S-->>UI: event: thread (snapshot)
+    UI->>S: GET /api/stream?thread=id (SSE)
+    S-->>UI: event: thread:thread (snapshot)
     UI->>S: POST /api/threads/send {id, message}
     S->>G: gitSnapshotWorktree (beforeSHA)
     S->>H: spawn with session flags and prompt
@@ -64,7 +64,7 @@ The anchor and ground rules ("you may read and edit any file, reply with a conci
 - `gemini` (`parseGeminiEvent`): assistant message deltas stream tokens live; `tool_use` events stream step labels in real time.
 - Every other harness has its stdout treated as the reply, line by line. stderr goes to a `tailBuffer` and is appended to the error only when the turn failed with no reply.
 
-The feed is Server-Sent Events at `/api/threads/stream`:
+The feed is Server-Sent Events at `/api/threads/stream`. The browser does not open it directly: browsers allow six HTTP/1.1 connections per host across all tabs, and a stream per feature used to take them all, after which every request queued forever. Instead the same events ride on the tab's one `/api/stream` connection (`web/src/stream.js`): `?threads=1` adds the list events as `threads:<event>`, and each `?thread=<id>` adds that thread's events as `thread:<event>` with payload `{id, data}`. A `thread=` id that no longer exists gets a `thread:deleted` on connect.
 
 | Event | Payload | Sent to |
 | --- | --- | --- |
@@ -122,7 +122,7 @@ To provide instant visual review and safe rollbacks of code modifications genera
 | `/api/threads/scope` | POST | Update review scope in PR mode (`pr`, `mine`, `selection`). |
 | `/api/threads/delete` | POST | Delete `?id=`, stopping its turn first. |
 | `/api/threads/revert` | POST | Revert file changes made by a specific turn (`{id, turn}`). |
-| `/api/threads/stream` | GET | SSE feed (section 3). |
+| `/api/threads/stream` | GET | SSE feed (section 3). The UI reads it through `/api/stream` instead. |
 
 Every mutating endpoint is guarded by `localPost`, and carries the same security posture as inline edits: it runs a general-purpose coding agent with shell access as the user who started px0.
 

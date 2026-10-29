@@ -2034,14 +2034,14 @@ func TestGitApplyHunk(t *testing.T) {
 	if err := gitApplyHunk(root, "a.txt", hunk, "stage"); err != nil {
 		t.Fatalf("stage hunk: %v", err)
 	}
-	_, staged, _ := gitStatusAndStagedAgainst(root, "", "")
+	_, staged, _, _ := gitStatusAndStagedAgainst(root, "", "")
 	if !staged["a.txt"] {
 		t.Fatalf("expected a.txt to be staged after gitApplyHunk(stage)")
 	}
 	if err := gitApplyHunk(root, "a.txt", hunk, "unstage"); err != nil {
 		t.Fatalf("unstage hunk: %v", err)
 	}
-	_, staged, _ = gitStatusAndStagedAgainst(root, "", "")
+	_, staged, _, _ = gitStatusAndStagedAgainst(root, "", "")
 	if staged["a.txt"] {
 		t.Fatalf("expected a.txt to be unstaged after gitApplyHunk(unstage)")
 	}
@@ -2283,5 +2283,54 @@ func TestGitCommitAutoStage(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "auto staged commit" {
 		t.Fatalf("expected commit subject 'auto staged commit', got %q", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestGitStatusPartialAfterStaging(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("one\n")
+	run("init")
+	run("config", "user.email", "t@example.com")
+	run("config", "user.name", "T")
+	run("config", "commit.gpgsign", "false")
+	run("add", "a.txt")
+	run("commit", "-qm", "init")
+
+	write("two\n")
+	run("add", "a.txt")
+	_, staged, partial, _ := gitStatusAndStagedAgainst(root, "", "")
+	if !staged["a.txt"] || partial["a.txt"] {
+		t.Fatalf("freshly staged: staged=%v partial=%v, want true/false", staged["a.txt"], partial["a.txt"])
+	}
+
+	write("three\n")
+	_, staged, partial, _ = gitStatusAndStagedAgainst(root, "", "")
+	if !staged["a.txt"] || !partial["a.txt"] {
+		t.Fatalf("modified after staging: staged=%v partial=%v, want true/true", staged["a.txt"], partial["a.txt"])
+	}
+
+	run("add", "a.txt")
+	_, _, partial, _ = gitStatusAndStagedAgainst(root, "", "")
+	if partial["a.txt"] {
+		t.Fatalf("restaged: partial still set")
 	}
 }

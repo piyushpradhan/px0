@@ -111,7 +111,7 @@ px0 is structured into decoupled core files and modular `internal/` packages:
 | `/api/def`            | `GET`  | Quick definition lookup fallback                                        | JSON array of matching definition locations|
 | `/api/diff`           | `GET`  | Unified diff of working tree vs. `HEAD` or commit ref (`?path=...&ref=...`) | JSON (`{path, diff, available}`)      |
 | `/api/gutter`         | `GET`  | Per-line change markers for code view gutter                            | JSON (`{added, modified, deleted}`)        |
-| `/api/stream`         | `GET`  | Unified SSE stream for real-time `git-status` and `metrics` events (aliased by `/api/git/stream`) | `text/event-stream`   |
+| `/api/stream`         | `GET`  | Unified SSE stream for real-time `git-status` and `metrics` events (aliased by `/api/git/stream`); `?threads=1`, `?thread=<id>` and `?review=1` add thread and review workflow events, so each tab holds one connection | `text/event-stream`   |
 | `/api/git/refresh`    | `POST` | Triggers immediate git status check and returns status payload          | JSON (`{git, gitChanges, gitFiles, ...}`)  |
 | `/api/git/stage`      | `POST` | Stage a file (`?path=...`), or `"."` for all changes                   | JSON (`{ok, status}`)                      |
 | `/api/git/unstage`    | `POST` | Unstage a file (`?path=...`)                                            | JSON (`{ok, status}`)                      |

@@ -27,6 +27,7 @@ type Node struct {
 	Ignored    bool   `json:"ignored,omitempty"`    // Matched by .gitignore: listed in tree dimmed, never indexed
 	Status     string `json:"status,omitempty"`     // Git working-tree status code: M (modified), A (added), D (deleted), U (untracked), etc.
 	Staged     bool   `json:"staged,omitempty"`     // True if the file has staged changes in the git index
+	Partial    bool   `json:"partial,omitempty"`    // True if the file was modified again after staging
 	Dirty      bool   `json:"dirty,omitempty"`      // For folders: true if any descendant has git changes
 	YourStatus string `json:"yourStatus,omitempty"` // PR review mode: reviewer's local changes since checkout
 	YourDirty  bool   `json:"yourDirty,omitempty"`  // PR review mode for folders: contains reviewer-changed descendant
@@ -51,6 +52,7 @@ type Index struct {
 	gitFiles         []string
 	gitStatusMap     map[string]string
 	gitStagedMap     map[string]bool
+	gitPartialMap    map[string]bool
 	gitYourStatusMap map[string]string
 	diffBase         string
 	prHead           string
@@ -376,6 +378,7 @@ func (ix *Index) Build() {
 	type gitRes struct {
 		gs           map[string]string
 		staged       map[string]bool
+		partial      map[string]bool
 		yourStatuses map[string]string
 		dirtyDirs    map[string]bool
 		yourDirty    map[string]bool
@@ -383,11 +386,12 @@ func (ix *Index) Build() {
 	}
 	gsCh := make(chan gitRes, 1)
 	go func() {
-		gs, staged, yourStatuses := gitStatusAndStagedAgainst(ix.root, base, head)
+		gs, staged, partial, yourStatuses := gitStatusAndStagedAgainst(ix.root, base, head)
 		dirtyDirs, yourDirtyDirs, gitFiles := computeDirtyState(gs, yourStatuses)
 		gsCh <- gitRes{
 			gs:           gs,
 			staged:       staged,
+			partial:      partial,
 			yourStatuses: yourStatuses,
 			dirtyDirs:    dirtyDirs,
 			yourDirty:    yourDirtyDirs,
@@ -492,7 +496,7 @@ func (ix *Index) Build() {
 	wg.Wait()
 
 	gr := <-gsCh
-	gs, staged, yourStatuses := gr.gs, gr.staged, gr.yourStatuses
+	gs, staged, partial, yourStatuses := gr.gs, gr.staged, gr.partial, gr.yourStatuses
 	dirtyDirs, yourDirtyDirs, gitFiles := gr.dirtyDirs, gr.yourDirty, gr.gitFiles
 
 	if len(gs) > 0 || len(staged) > 0 || len(yourStatuses) > 0 {
@@ -508,6 +512,7 @@ func (ix *Index) Build() {
 				} else {
 					kids[i].Status = gs[p]
 					kids[i].Staged = staged[p]
+					kids[i].Partial = partial[p]
 					if yourStatuses != nil {
 						kids[i].YourStatus = yourStatuses[p]
 					}
@@ -517,7 +522,7 @@ func (ix *Index) Build() {
 		}
 	}
 
-	injectDeletedNodes(children, gs, staged, yourStatuses, dirtyDirs, yourDirtyDirs)
+	injectDeletedNodes(children, gs, staged, partial, yourStatuses, dirtyDirs, yourDirtyDirs)
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 
@@ -526,6 +531,7 @@ func (ix *Index) Build() {
 	ix.gitFiles = gitFiles
 	ix.gitStatusMap = gs
 	ix.gitStagedMap = staged
+	ix.gitPartialMap = partial
 	ix.gitYourStatusMap = yourStatuses
 	ix.files, ix.children = files, children
 	ix.builtAt, ix.buildMS = time.Now(), time.Since(start).Milliseconds()
@@ -541,8 +547,9 @@ func (ix *Index) Build() {
 // exist on disk and were therefore omitted by the filesystem walk) are added to children
 // under their respective parent directories, and that any missing intermediate directory
 // nodes are created and marked dirty.
-func injectDeletedNodes(children map[string][]Node, gs map[string]string, staged map[string]bool, ys map[string]string, dirtyDirs map[string]bool, yourDirtyDirs map[string]bool) {
+func injectDeletedNodes(children map[string][]Node, gs map[string]string, staged, partial map[string]bool, ys map[string]string, dirtyDirs map[string]bool, yourDirtyDirs map[string]bool) {
 	apply := func(p string, st string, isStaged bool, yst string) {
+		isPartial := partial[p]
 		parts := strings.Split(p, "/")
 		for i := 0; i < len(parts)-1; i++ {
 			parentDir := ""
@@ -588,6 +595,7 @@ func injectDeletedNodes(children map[string][]Node, gs map[string]string, staged
 			if kids[i].Path == p && !kids[i].Dir {
 				kids[i].Status = st
 				kids[i].Staged = isStaged
+				kids[i].Partial = isPartial
 				kids[i].YourStatus = yst
 				found = true
 				break
@@ -600,6 +608,7 @@ func injectDeletedNodes(children map[string][]Node, gs map[string]string, staged
 				Dir:        false,
 				Status:     st,
 				Staged:     isStaged,
+				Partial:    isPartial,
 				YourStatus: yst,
 			})
 			sortNodes(children[dir])
@@ -652,6 +661,21 @@ func cleanupEmptyDirs(children map[string][]Node, root string) {
 	}
 }
 
+// GitPartial returns a copy of the staged paths that were modified again in
+// the worktree after staging, as of the last git status run.
+func (ix *Index) GitPartial() map[string]bool {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	if len(ix.gitPartialMap) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(ix.gitPartialMap))
+	for k, v := range ix.gitPartialMap {
+		m[k] = v
+	}
+	return m
+}
+
 // UpdateGitStatus re-runs git status, updates in-memory status codes, staged
 // flags, and dirty directory markers across ix.children without re-walking
 // the filesystem tree. Reports gitChanges count, gitFiles list, whether
@@ -664,12 +688,15 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 
 	base := ix.DiffBase()
 	head := ix.PRHead()
-	gs, sg, ys := gitStatusAndStagedAgainst(ix.root, base, head)
+	gs, sg, pt, ys := gitStatusAndStagedAgainst(ix.root, base, head)
 	if gs == nil {
 		gs = map[string]string{}
 	}
 	if sg == nil {
 		sg = map[string]bool{}
+	}
+	if pt == nil {
+		pt = map[string]bool{}
 	}
 	if head != "" && ys == nil {
 		ys = map[string]string{}
@@ -680,7 +707,7 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 	defer ix.mu.Unlock()
 
 	// Check if status, staged, and yourStatuses maps are all unchanged
-	same := len(gs) == len(ix.gitStatusMap) && len(sg) == len(ix.gitStagedMap) && len(ys) == len(ix.gitYourStatusMap)
+	same := len(gs) == len(ix.gitStatusMap) && len(sg) == len(ix.gitStagedMap) && len(pt) == len(ix.gitPartialMap) && len(ys) == len(ix.gitYourStatusMap)
 	if same {
 		for k, v := range gs {
 			if ix.gitStatusMap[k] != v {
@@ -692,6 +719,14 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 	if same {
 		for k, v := range sg {
 			if ix.gitStagedMap[k] != v {
+				same = false
+				break
+			}
+		}
+	}
+	if same {
+		for k, v := range pt {
+			if ix.gitPartialMap[k] != v {
 				same = false
 				break
 			}
@@ -722,6 +757,7 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 			} else {
 				newStatus := gs[node.Path]
 				newStaged := sg[node.Path]
+				newPartial := pt[node.Path]
 				newYourStatus := ys[node.Path]
 
 				if (node.Status == "D" || node.YourStatus == "D") && newStatus != "D" && newYourStatus != "D" {
@@ -733,6 +769,7 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 
 				node.Status = newStatus
 				node.Staged = newStaged
+				node.Partial = newPartial
 				node.YourStatus = newYourStatus
 				filtered = append(filtered, node)
 			}
@@ -740,13 +777,14 @@ func (ix *Index) UpdateGitStatus() (count int, files []string, changed bool, sta
 		ix.children[dir] = filtered
 	}
 
-	injectDeletedNodes(ix.children, gs, sg, ys, newDirtyDirs, newYourDirtyDirs)
+	injectDeletedNodes(ix.children, gs, sg, pt, ys, newDirtyDirs, newYourDirtyDirs)
 	cleanupEmptyDirs(ix.children, ix.root)
 
 	ix.gitChanges = len(newGitFiles)
 	ix.gitFiles = newGitFiles
 	ix.gitStatusMap = gs
 	ix.gitStagedMap = sg
+	ix.gitPartialMap = pt
 	ix.gitYourStatusMap = ys
 
 	resFiles := make([]string, len(ix.gitFiles))
@@ -884,6 +922,7 @@ func (ix *Index) TouchPath(rel string) {
 			if ix.gitStagedMap != nil {
 				node.Staged = ix.gitStagedMap[rel]
 			}
+			node.Partial = ix.gitPartialMap[rel]
 			if ix.gitYourStatusMap != nil {
 				node.YourStatus = ix.gitYourStatusMap[rel]
 			}
